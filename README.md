@@ -1,2 +1,2 @@
 # NYCU_OSC_Lab
-NYCU Operating System Capstone 2026
+NYCU Operating System Capstone (Spring,2026)
