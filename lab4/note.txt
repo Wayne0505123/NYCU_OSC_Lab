@@ -1,0 +1,2 @@
+Use static int timer_boot_log_enabled = 1; -> open core timer interrupt
+                                      = 0; -> close
