@@ -17,6 +17,11 @@ extern void uart_set_config(int reg_shift, int reg_io_width);
 #define RELOC_ADDR 0x20000000UL
 #define KERNEL_ENTRY 0x80200000UL
 
+/* Loaded payload layout used by the bootloader load command. */
+#define CPIO_LOAD_ADDR ((unsigned char*)0x03000000UL)
+#define NEW_FDT_ADDR  ((unsigned char*)0x03F00000UL)
+#define NEW_FDT_SIZE  0x400000UL
+
 #define BOOT_MAGIC 0x544F4F42UL
 
 #define FDT_BEGIN_NODE 0x00000001
@@ -148,6 +153,21 @@ static int hextoi_simple(const char *s, int n) {
 
 static int align_int(int n, int byte) {
     return (n + byte - 1) & ~(byte - 1);
+}
+
+static void memcpy_simple(void *dst, const void *src, unsigned long n) {
+    unsigned char *d = (unsigned char *)dst;
+    const unsigned char *s = (const unsigned char *)src;
+
+    for (unsigned long i = 0; i < n; i++)
+        d[i] = s[i];
+}
+
+static void memset_simple(void *dst, int value, unsigned long n) {
+    unsigned char *d = (unsigned char *)dst;
+
+    for (unsigned long i = 0; i < n; i++)
+        d[i] = (unsigned char)value;
 }
 
 static void uart_put_uint(unsigned int x) {
@@ -382,6 +402,135 @@ static unsigned long fdt_read_addr(const void *prop, int len) {
     return 0;
 }
 
+static void fdt_write_addr(void *prop, int len, unsigned long value) {
+    uint32_t *p = (uint32_t *)prop;
+
+    if (len >= 8) {
+        p[0] = bswap32((uint32_t)(value >> 32));
+        p[1] = bswap32((uint32_t)(value & 0xffffffffUL));
+    } else if (len >= 4) {
+        p[0] = bswap32((uint32_t)(value & 0xffffffffUL));
+    }
+}
+
+static void *fdt_getprop_writable(void *fdt,
+                                  int nodeoffset,
+                                  const char *name,
+                                  int *lenp) {
+    struct fdt_header *hdr = (struct fdt_header *)fdt;
+    if (bswap32(hdr->magic) != 0xd00dfeed)
+        return NULL;
+
+    char *struct_base = (char *)fdt + bswap32(hdr->off_dt_struct);
+    const char *strings_base = (const char *)fdt + bswap32(hdr->off_dt_strings);
+    char *p = struct_base + nodeoffset;
+
+    if (bswap32(*(const uint32_t *)p) != FDT_BEGIN_NODE)
+        return NULL;
+    p += 4;
+
+    p = (char *)align_up(p + strlen_simple(p) + 1, 4);
+
+    int depth = 0;
+
+    while (1) {
+        uint32_t tag = bswap32(*(const uint32_t *)p);
+        p += 4;
+
+        if (tag == FDT_PROP) {
+            uint32_t len = bswap32(*(const uint32_t *)p);
+            p += 4;
+            uint32_t nameoff = bswap32(*(const uint32_t *)p);
+            p += 4;
+
+            const char *prop_name = strings_base + nameoff;
+            void *prop_data = p;
+
+            if (depth == 0 && strcmp_full(prop_name, name) == 0) {
+                if (lenp)
+                    *lenp = (int)len;
+                return prop_data;
+            }
+
+            p = (char *)align_up(p + len, 4);
+        } else if (tag == FDT_BEGIN_NODE) {
+            depth++;
+            p = (char *)align_up(p + strlen_simple(p) + 1, 4);
+        } else if (tag == FDT_END_NODE) {
+            if (depth == 0)
+                break;
+            depth--;
+        } else if (tag == FDT_NOP) {
+            /* do nothing */
+        } else if (tag == FDT_END) {
+            break;
+        } else {
+            return NULL;
+        }
+    }
+
+    return NULL;
+}
+
+static void *make_writable_fdt_copy(const void *old_fdt) {
+    const struct fdt_header *old_hdr = (const struct fdt_header *)old_fdt;
+    struct fdt_header *new_hdr = (struct fdt_header *)NEW_FDT_ADDR;
+
+    if (bswap32(old_hdr->magic) != 0xd00dfeed) {
+        uart_puts("invalid fdt magic\n");
+        return NULL;
+    }
+
+    unsigned long old_size = (unsigned long)bswap32(old_hdr->totalsize);
+
+    uart_puts("old fdt size = ");
+    uart_hex(old_size);
+    uart_puts("\n");
+    uart_puts("new fdt size = ");
+    uart_hex(NEW_FDT_SIZE);
+    uart_puts("\n");
+
+    if (old_size > NEW_FDT_SIZE) {
+        uart_puts("new fdt buffer too small\n");
+        return NULL;
+    }
+
+    memset_simple(NEW_FDT_ADDR, 0, NEW_FDT_SIZE);
+    memcpy_simple(NEW_FDT_ADDR, old_fdt, old_size);
+
+    /* Reserve a larger writable FDT area for the loaded kernel. */
+    new_hdr->totalsize = bswap32((uint32_t)NEW_FDT_SIZE);
+
+    return NEW_FDT_ADDR;
+}
+
+static int update_initrd_in_fdt(void *fdt,
+                                unsigned long initrd_start_addr,
+                                unsigned long initrd_end_addr) {
+    int len;
+    int chosen = fdt_path_offset(fdt, "/chosen");
+    if (chosen < 0) {
+        uart_puts("fdt_path_offset(/chosen) failed\n");
+        return -1;
+    }
+
+    void *startp = fdt_getprop_writable(fdt, chosen, "linux,initrd-start", &len);
+    if (!startp || len < 4) {
+        uart_puts("fdt_getprop(initrd-start) failed\n");
+        return -1;
+    }
+    fdt_write_addr(startp, len, initrd_start_addr);
+
+    void *endp = fdt_getprop_writable(fdt, chosen, "linux,initrd-end", &len);
+    if (!endp || len < 4) {
+        uart_puts("fdt_getprop(initrd-end) failed\n");
+        return -1;
+    }
+    fdt_write_addr(endp, len, initrd_end_addr);
+
+    return 0;
+}
+
 static void initrd_init_from_dtb(const void *fdt) {
     int len;
     int offset = fdt_path_offset(fdt, "/chosen");
@@ -564,7 +713,7 @@ static void shell_help(void) {
     uart_puts("    help  - show all commands.\n");
     uart_puts("    hello - print Hello world.\n");
     uart_puts("    info  - print system info.\n");
-    uart_puts("    load  - load a kernel over UART.\n");
+    uart_puts("    load  - load a kernel and cpio over UART.\n");
     uart_puts("    ls    - list files in initramfs.\n");
     uart_puts("    cat   - print file content.\n");
 }
@@ -597,7 +746,7 @@ static unsigned int uart_get_u32(void) {
     return x;
 }
 
-static void boot_loaded_kernel(void) {
+static void boot_loaded_kernel(const void *fdt_for_kernel) {
     void (*kernel_entry)(unsigned long hartid, const void *fdt);
 
     kernel_entry =
@@ -605,7 +754,7 @@ static void boot_loaded_kernel(void) {
 
     asm volatile("fence.i" ::: "memory");
 
-    kernel_entry(0, boot_fdt);
+    kernel_entry(0, fdt_for_kernel);
 }
 
 static void shell_load(void) {
@@ -613,7 +762,7 @@ static void shell_load(void) {
 
     unsigned int magic = uart_get_u32();
     if (magic != BOOT_MAGIC) {
-        uart_puts("Bad magic.\n");
+        uart_puts("Bad kernel magic.\n");
         return;
     }
 
@@ -621,12 +770,48 @@ static void shell_load(void) {
     uart_puts("Receiving kernel...\n");
 
     for (unsigned int i = 0; i < size; i++)
-    LOAD_ADDR[i] = uart_getb();
+        LOAD_ADDR[i] = uart_getb();
 
     asm volatile("fence.i" ::: "memory");
 
+    uart_puts("Waiting for cpio archive...\n");
+
+    magic = uart_get_u32();
+    if (magic != BOOT_MAGIC) {
+        uart_puts("Bad cpio magic.\n");
+        return;
+    }
+
+    unsigned int cpio_size = uart_get_u32();
+    uart_puts("Receiving cpio...\n");
+
+    for (unsigned int i = 0; i < cpio_size; i++)
+        CPIO_LOAD_ADDR[i] = uart_getb();
+
+    void *new_fdt = make_writable_fdt_copy(boot_fdt);
+    if (!new_fdt)
+        return;
+
+    unsigned long cpio_start = (unsigned long)CPIO_LOAD_ADDR;
+    unsigned long cpio_end = cpio_start + (unsigned long)cpio_size;
+
+    if (update_initrd_in_fdt(new_fdt, cpio_start, cpio_end) < 0)
+        return;
+
+    uart_puts("new fdt = ");
+    uart_hex((unsigned long)new_fdt);
+    uart_puts("\n");
+
+    uart_puts("new initrd start = ");
+    uart_hex(cpio_start);
+    uart_puts("\n");
+
+    uart_puts("new initrd end   = ");
+    uart_hex(cpio_end);
+    uart_puts("\n");
+
     uart_puts("Booting loaded kernel...\n");
-    boot_loaded_kernel();
+    boot_loaded_kernel(new_fdt);
 }
 
 static void shell_execute(const char* cmd) {

@@ -3,62 +3,50 @@
 #include <stddef.h>
 
 /* ---------- UART ---------- */
-
 extern char uart_getc(void);
 extern void uart_putc(char c);
 extern void uart_puts(const char *s);
 extern void uart_hex(unsigned long h);
-extern void uart_put_uint(unsigned int x);
-extern unsigned char uart_getb(void);
-extern void uart_putb(unsigned char c);
+extern unsigned char uart_getb_raw(void);
 extern void uart_set_base(unsigned long base);
 extern void uart_set_config(int reg_shift, int reg_io_width);
 
 /* ---------- Linker symbols ---------- */
-
 extern char _start[];
 extern char _end[];
-
-/* ---------- Load / relocation ---------- */
-
-#define LOAD_ADDR  ((unsigned char *)0x00200000UL)
-#define RELOC_ADDR 0x20000000UL
-#define BOOT_MAGIC 0x544F4F42UL
-
-static const void *boot_fdt;
-
-/* start_kernel is used by relocate_self() */
 void start_kernel(const void *fdt);
 
-/* ---------- SBI ---------- */
+/* ---------- Boot / load / relocation ---------- */
+#define LOAD_ADDR          ((unsigned char *)0x00200000UL)
+#define CPIO_LOAD_ADDR     ((unsigned char *)0x03000000UL)
+#define NEW_FDT_ADDR       ((unsigned char *)0x03F00000UL)
+#define NEW_FDT_SIZE       0x400000UL
+#define RELOC_ADDR         0x20000000UL
+#define BOOT_MAGIC         0x544F4F42UL
+#define KERNEL_STACK_SIZE  (128 * 1024UL)
 
-#define SBI_EXT_SET_TIMER 0x0
-#define SBI_EXT_SHUTDOWN  0x8
-#define SBI_EXT_BASE      0x10
+/* ---------- Orange Pi RV2 UART0 ---------- */
+#define UART_BASE 0xD4017000UL
 
-enum sbi_ext_base_fid {
-    SBI_EXT_BASE_GET_SPEC_VERSION,
-    SBI_EXT_BASE_GET_IMP_ID,
-    SBI_EXT_BASE_GET_IMP_VERSION,
-    SBI_EXT_BASE_PROBE_EXT,
-    SBI_EXT_BASE_GET_MVENDORID,
-    SBI_EXT_BASE_GET_MARCHID,
-    SBI_EXT_BASE_GET_MIMPID,
-};
+static const void *boot_fdt;
+static const void *initrd_start = 0;
+static const void *initrd_end = 0;
+
+/* ---------- SBI base extension: kept for Lab 1/2 info command only ---------- */
+#define SBI_EXT_BASE 0x10
 
 struct sbiret {
     long error;
     long value;
 };
 
-struct sbiret sbi_ecall(int ext,
-                        int fid,
-                        unsigned long arg0,
-                        unsigned long arg1,
-                        unsigned long arg2,
-                        unsigned long arg3,
-                        unsigned long arg4,
-                        unsigned long arg5) {
+static struct sbiret sbi_ecall(int ext, int fid,
+                               unsigned long arg0,
+                               unsigned long arg1,
+                               unsigned long arg2,
+                               unsigned long arg3,
+                               unsigned long arg4,
+                               unsigned long arg5) {
     struct sbiret ret;
 
     register unsigned long a0 asm("a0") = arg0;
@@ -75,31 +63,129 @@ struct sbiret sbi_ecall(int ext,
                  : "r"(a2), "r"(a3), "r"(a4), "r"(a5), "r"(a6), "r"(a7)
                  : "memory");
 
-    ret.error = a0;
-    ret.value = a1;
+    ret.error = (long)a0;
+    ret.value = (long)a1;
     return ret;
 }
 
-static long sbi_get_spec_version(void) {
-    return sbi_ecall(SBI_EXT_BASE,
-                     SBI_EXT_BASE_GET_SPEC_VERSION,
-                     0, 0, 0, 0, 0, 0).value;
+static unsigned long sbi_get_spec_version(void) {
+    return (unsigned long)sbi_ecall(SBI_EXT_BASE, 0, 0, 0, 0, 0, 0, 0).value;
 }
 
-static long sbi_get_impl_id(void) {
-    return sbi_ecall(SBI_EXT_BASE,
-                     SBI_EXT_BASE_GET_IMP_ID,
-                     0, 0, 0, 0, 0, 0).value;
+static unsigned long sbi_get_impl_id(void) {
+    return (unsigned long)sbi_ecall(SBI_EXT_BASE, 1, 0, 0, 0, 0, 0, 0).value;
 }
 
-static long sbi_get_impl_version(void) {
-    return sbi_ecall(SBI_EXT_BASE,
-                     SBI_EXT_BASE_GET_IMP_VERSION,
-                     0, 0, 0, 0, 0, 0).value;
+static unsigned long sbi_get_impl_version(void) {
+    return (unsigned long)sbi_ecall(SBI_EXT_BASE, 2, 0, 0, 0, 0, 0, 0).value;
 }
 
-/* ---------- FDT ---------- */
+/* Defensive cleanup when this kernel is hot-loaded from a Lab4 kernel. */
+static inline void local_irq_disable(void) {
+    asm volatile("csrci sstatus, 2" ::: "memory");
+    asm volatile("csrc sie, %0" :: "r"((1UL << 5) | (1UL << 9)) : "memory");
+}
 
+/* ---------- tiny libc ---------- */
+static size_t strlen_simple(const char *s) {
+    size_t n = 0;
+    while (s[n])
+        n++;
+    return n;
+}
+
+static int strcmp_full(const char *a, const char *b) {
+    while (*a && *b) {
+        if (*a != *b)
+            return (unsigned char)*a - (unsigned char)*b;
+        a++;
+        b++;
+    }
+    return (unsigned char)*a - (unsigned char)*b;
+}
+
+static int strcmp_simple(const char *a, const char *b) {
+    return strcmp_full(a, b) == 0;
+}
+
+static int strncmp_simple(const char *a, const char *b, size_t n) {
+    while (n-- > 0) {
+        if (*a != *b)
+            return (unsigned char)*a - (unsigned char)*b;
+        if (*a == '\0')
+            return 0;
+        a++;
+        b++;
+    }
+    return 0;
+}
+
+static void strcpy_simple(char *dst, const char *src) {
+    while ((*dst++ = *src++))
+        ;
+}
+
+static void strcat_simple(char *dst, const char *src) {
+    while (*dst)
+        dst++;
+    while ((*dst++ = *src++))
+        ;
+}
+
+static int memcmp_simple(const void *s1, const void *s2, int n) {
+    const unsigned char *a = (const unsigned char *)s1;
+    const unsigned char *b = (const unsigned char *)s2;
+    while (n-- > 0) {
+        if (*a != *b)
+            return *a - *b;
+        a++;
+        b++;
+    }
+    return 0;
+}
+
+static int hextoi_simple(const char *s, int n) {
+    int r = 0;
+    while (n-- > 0) {
+        r <<= 4;
+        if (*s >= '0' && *s <= '9')
+            r += *s - '0';
+        else if (*s >= 'A' && *s <= 'F')
+            r += *s - 'A' + 10;
+        else if (*s >= 'a' && *s <= 'f')
+            r += *s - 'a' + 10;
+        s++;
+    }
+    return r;
+}
+
+static int align_int(int n, int byte) {
+    return (n + byte - 1) & ~(byte - 1);
+}
+
+static const void *align_up_ptr(const void *ptr, size_t align) {
+    return (const void *)(((uintptr_t)ptr + align - 1) & ~(align - 1));
+}
+
+static void uart_put_ulong(unsigned long x) {
+    char buf[32];
+    int i = 0;
+
+    if (x == 0) {
+        uart_putc('0');
+        return;
+    }
+
+    while (x > 0) {
+        buf[i++] = (char)('0' + (x % 10));
+        x /= 10;
+    }
+
+    while (i > 0)
+        uart_putc(buf[--i]);
+}
+
+/* ---------- FDT parser: Lab 2 + used by Lab 3 allocator ---------- */
 #define FDT_BEGIN_NODE 0x00000001
 #define FDT_END_NODE   0x00000002
 #define FDT_PROP       0x00000003
@@ -119,11 +205,6 @@ struct fdt_header {
     uint32_t size_dt_struct;
 };
 
-static unsigned long initrd_start = 0;
-static unsigned long initrd_end = 0;
-
-/* ---------- Simple helpers ---------- */
-
 static uint32_t bswap32_main(uint32_t x) {
     return ((x & 0x000000ffU) << 24) |
            ((x & 0x0000ff00U) << 8)  |
@@ -131,97 +212,33 @@ static uint32_t bswap32_main(uint32_t x) {
            ((x & 0xff000000U) >> 24);
 }
 
-/* Needed because we build with -ffreestanding -nostdlib */
-void *memset(void *s, int c, size_t n) {
-    unsigned char *p = (unsigned char *)s;
-
-    while (n--)
-        *p++ = (unsigned char)c;
-
-    return s;
-}
-
-static size_t strlen_simple(const char *s) {
-    size_t n = 0;
-    while (s[n])
-        n++;
-    return n;
-}
-
-static int strcmp_full(const char *a, const char *b) {
-    while (*a && *b) {
-        if (*a != *b)
-            return (unsigned char)*a - (unsigned char)*b;
-        a++;
-        b++;
-    }
-
-    return (unsigned char)*a - (unsigned char)*b;
-}
-
-static int strcmp_cmd(const char *a, const char *b) {
-    return strcmp_full(a, b) == 0;
-}
-
-static int strncmp_simple(const char *a, const char *b, size_t n) {
-    while (n-- > 0) {
-        if (*a != *b)
-            return (unsigned char)*a - (unsigned char)*b;
-
-        if (*a == '\0')
-            return 0;
-
-        a++;
-        b++;
-    }
-
-    return 0;
-}
-
-static void strcpy_simple(char *dst, const char *src) {
-    while ((*dst++ = *src++))
-        ;
-}
-
-static void strcat_simple(char *dst, const char *src) {
-    while (*dst)
-        dst++;
-
-    while ((*dst++ = *src++))
-        ;
-}
-
-static const void *align_ptr(const void *ptr, size_t align) {
-    return (const void *)(((uintptr_t)ptr + align - 1) & ~(align - 1));
-}
-
 static unsigned long read_cells(const uint32_t *p, int cells) {
     unsigned long v = 0;
-
     for (int i = 0; i < cells; i++)
         v = (v << 32) | bswap32_main(p[i]);
-
     return v;
 }
 
-/* ---------- FDT parser, used by mm.c too ---------- */
+static int fdt_is_valid(const void *fdt) {
+    if (!fdt)
+        return 0;
+
+    const struct fdt_header *hdr = (const struct fdt_header *)fdt;
+    return bswap32_main(hdr->magic) == 0xd00dfeed;
+}
 
 int fdt_path_offset(const void *fdt, const char *path) {
     const struct fdt_header *hdr = (const struct fdt_header *)fdt;
-
-    if (bswap32_main(hdr->magic) != 0xd00dfeed)
+    if (!fdt_is_valid(fdt))
         return -1;
 
-    const char *struct_base =
-        (const char *)fdt + bswap32_main(hdr->off_dt_struct);
-
+    const char *struct_base = (const char *)fdt + bswap32_main(hdr->off_dt_struct);
     const char *p = struct_base;
-
     char curpath[1024];
-    curpath[0] = '\0';
-
     size_t pathlen_stack[128];
     int depth = 0;
+
+    curpath[0] = '\0';
 
     while (1) {
         int nodeoff = (int)(p - struct_base);
@@ -238,13 +255,9 @@ int fdt_path_offset(const void *fdt, const char *path) {
             } else {
                 if (strcmp_full(curpath, "/") != 0)
                     strcat_simple(curpath, "/");
-
                 strcat_simple(curpath, name);
             }
 
-            /*
-             * Allow path "/memory" to match "/memory@0" or "/memory@80000000".
-             */
             const char *a = curpath;
             const char *b = path;
             int matched = 1;
@@ -256,9 +269,7 @@ int fdt_path_offset(const void *fdt, const char *path) {
                     continue;
                 }
 
-                while (*a && *b &&
-                       *a != '/' && *b != '/' &&
-                       *a == *b) {
+                while (*a && *b && *a != '/' && *b != '/' && *a == *b) {
                     a++;
                     b++;
                 }
@@ -271,7 +282,6 @@ int fdt_path_offset(const void *fdt, const char *path) {
 
                 while (*a && *a != '/')
                     a++;
-
                 while (*b && *b != '/')
                     b++;
 
@@ -284,7 +294,7 @@ int fdt_path_offset(const void *fdt, const char *path) {
             if (matched)
                 return nodeoff;
 
-            p = (const char *)align_ptr(p + strlen_simple(name) + 1, 4);
+            p = (const char *)align_up_ptr(p + strlen_simple(name) + 1, 4);
         } else if (tag == FDT_END_NODE) {
             if (depth > 0) {
                 size_t oldlen = pathlen_stack[--depth];
@@ -292,11 +302,9 @@ int fdt_path_offset(const void *fdt, const char *path) {
             }
         } else if (tag == FDT_PROP) {
             uint32_t len = bswap32_main(*(const uint32_t *)p);
-            p += 4; /* len */
-            p += 4; /* nameoff */
-            p = (const char *)align_ptr(p + len, 4);
+            p += 8;
+            p = (const char *)align_up_ptr(p + len, 4);
         } else if (tag == FDT_NOP) {
-            /* nothing */
         } else if (tag == FDT_END) {
             break;
         } else {
@@ -307,28 +315,22 @@ int fdt_path_offset(const void *fdt, const char *path) {
     return -1;
 }
 
-const void *fdt_getprop(const void *fdt,
-                        int nodeoffset,
-                        const char *name,
-                        int *lenp) {
+const void *fdt_getprop(const void *fdt, int nodeoffset,
+                        const char *name, int *lenp) {
     const struct fdt_header *hdr = (const struct fdt_header *)fdt;
 
-    if (bswap32_main(hdr->magic) != 0xd00dfeed)
+    if (!fdt_is_valid(fdt))
         return 0;
 
-    const char *struct_base =
-        (const char *)fdt + bswap32_main(hdr->off_dt_struct);
-
-    const char *strings_base =
-        (const char *)fdt + bswap32_main(hdr->off_dt_strings);
-
+    const char *struct_base = (const char *)fdt + bswap32_main(hdr->off_dt_struct);
+    const char *strings_base = (const char *)fdt + bswap32_main(hdr->off_dt_strings);
     const char *p = struct_base + nodeoffset;
 
     if (bswap32_main(*(const uint32_t *)p) != FDT_BEGIN_NODE)
         return 0;
 
     p += 4;
-    p = (const char *)align_ptr(p + strlen_simple(p) + 1, 4);
+    p = (const char *)align_up_ptr(p + strlen_simple(p) + 1, 4);
 
     int depth = 0;
 
@@ -339,7 +341,6 @@ const void *fdt_getprop(const void *fdt,
         if (tag == FDT_PROP) {
             uint32_t len = bswap32_main(*(const uint32_t *)p);
             p += 4;
-
             uint32_t nameoff = bswap32_main(*(const uint32_t *)p);
             p += 4;
 
@@ -349,21 +350,18 @@ const void *fdt_getprop(const void *fdt,
             if (depth == 0 && strcmp_full(prop_name, name) == 0) {
                 if (lenp)
                     *lenp = (int)len;
-
                 return prop_data;
             }
 
-            p = (const char *)align_ptr(p + len, 4);
+            p = (const char *)align_up_ptr(p + len, 4);
         } else if (tag == FDT_BEGIN_NODE) {
             depth++;
-            p = (const char *)align_ptr(p + strlen_simple(p) + 1, 4);
+            p = (const char *)align_up_ptr(p + strlen_simple(p) + 1, 4);
         } else if (tag == FDT_END_NODE) {
             if (depth == 0)
                 break;
-
             depth--;
         } else if (tag == FDT_NOP) {
-            /* nothing */
         } else if (tag == FDT_END) {
             break;
         } else {
@@ -374,111 +372,122 @@ const void *fdt_getprop(const void *fdt,
     return 0;
 }
 
-/* ---------- UART / initrd init ---------- */
+static void fdt_write_u64_prop(void *fdt, int node, const char *name,
+                               unsigned long value) {
+    int len = 0;
+    uint32_t *prop = (uint32_t *)fdt_getprop(fdt, node, name, &len);
+
+    if (!prop || len < 8) {
+        uart_puts("fdt prop missing: ");
+        uart_puts(name);
+        uart_puts("\n");
+        return;
+    }
+
+    prop[0] = bswap32_main((uint32_t)(value >> 32));
+    prop[1] = bswap32_main((uint32_t)(value & 0xffffffffUL));
+}
+
+static void *make_writable_fdt_copy(const void *old_fdt) {
+    if (!fdt_is_valid(old_fdt)) {
+        uart_puts("invalid fdt\n");
+        return 0;
+    }
+
+    const struct fdt_header *old_hdr = (const struct fdt_header *)old_fdt;
+    unsigned int old_size = bswap32_main(old_hdr->totalsize);
+
+    if (old_size > NEW_FDT_SIZE) {
+        uart_puts("new fdt buffer too small\n");
+        return 0;
+    }
+
+    unsigned char *dst = NEW_FDT_ADDR;
+    const unsigned char *src = (const unsigned char *)old_fdt;
+
+    for (unsigned int i = 0; i < old_size; i++)
+        dst[i] = src[i];
+
+    return (void *)dst;
+}
+
+static void update_initrd_in_fdt(void *fdt,
+                                 unsigned long initrd_start_addr,
+                                 unsigned long initrd_end_addr) {
+    int chosen = fdt_path_offset(fdt, "/chosen");
+
+    if (chosen < 0) {
+        uart_puts("/chosen not found\n");
+        return;
+    }
+
+    fdt_write_u64_prop(fdt, chosen, "linux,initrd-start", initrd_start_addr);
+    fdt_write_u64_prop(fdt, chosen, "linux,initrd-end", initrd_end_addr);
+}
+
+static void initrd_init_from_dtb(const void *fdt) {
+    int offset = fdt_path_offset(fdt, "/chosen");
+    int len;
+
+    if (offset < 0)
+        return;
+
+    const void *startp = fdt_getprop(fdt, offset, "linux,initrd-start", &len);
+    if (startp)
+        initrd_start = (const void *)read_cells((const uint32_t *)startp, len / 4);
+
+    const void *endp = fdt_getprop(fdt, offset, "linux,initrd-end", &len);
+    if (endp)
+        initrd_end = (const void *)read_cells((const uint32_t *)endp, len / 4);
+
+    uart_puts("initrd start = ");
+    uart_hex((unsigned long)initrd_start);
+    uart_puts("\n");
+    uart_puts("initrd end   = ");
+    uart_hex((unsigned long)initrd_end);
+    uart_puts("\n");
+}
 
 static void uart_init_from_dtb(const void *fdt) {
     int len;
+    unsigned long uart_base = UART_BASE;
+    int reg_shift = 2;
+    int reg_width = 4;
 
     int node = fdt_path_offset(fdt, "/soc/serial@d4017000");
-
     if (node < 0)
         node = fdt_path_offset(fdt, "/soc/serial");
-
     if (node < 0)
         node = fdt_path_offset(fdt, "/soc/uart");
 
-    if (node < 0) {
-        uart_set_base(0xd4017000UL);
-        uart_set_config(2, 4);
-        return;
+    if (node >= 0) {
+        const uint32_t *reg = (const uint32_t *)fdt_getprop(fdt, node, "reg", &len);
+        if (reg && len >= 16)
+            uart_base = read_cells(reg, 2);
+
+        int shift_len = 0;
+        int width_len = 0;
+        const uint32_t *shift = (const uint32_t *)fdt_getprop(fdt, node, "reg-shift", &shift_len);
+        const uint32_t *width = (const uint32_t *)fdt_getprop(fdt, node, "reg-io-width", &width_len);
+        reg_shift = (shift && shift_len >= 4) ? (int)bswap32_main(shift[0]) : 2;
+        reg_width = (width && width_len >= 4) ? (int)bswap32_main(width[0]) : 4;
     }
 
-    const uint32_t *reg =
-        (const uint32_t *)fdt_getprop(fdt, node, "reg", &len);
-
-    if (!reg || len < 16) {
-        uart_set_base(0xd4017000UL);
-        uart_set_config(2, 4);
-        return;
-    }
-
-    unsigned long base =
-        ((unsigned long)bswap32_main(reg[0]) << 32) |
-        (unsigned long)bswap32_main(reg[1]);
-
-    const uint32_t *shift =
-        (const uint32_t *)fdt_getprop(fdt, node, "reg-shift", &len);
-
-    int reg_shift = 0;
-    if (shift && len >= 4)
-        reg_shift = (int)bswap32_main(shift[0]);
-
-    const uint32_t *width =
-        (const uint32_t *)fdt_getprop(fdt, node, "reg-io-width", &len);
-
-    int reg_width = 1;
-    if (width && len >= 4)
-        reg_width = (int)bswap32_main(width[0]);
-
+    uart_set_base(uart_base);
     uart_set_config(reg_shift, reg_width);
-    uart_set_base(base);
 
     uart_puts("uart base from dtb = ");
-    uart_hex(base);
+    uart_hex(uart_base);
     uart_puts("\n");
-
     uart_puts("uart reg shift = ");
     uart_hex((unsigned long)reg_shift);
     uart_puts("\n");
-
     uart_puts("uart reg width = ");
     uart_hex((unsigned long)reg_width);
     uart_puts("\n");
 }
 
-static void initrd_init_from_dtb(const void *fdt) {
-    int len;
-
-    int chosen = fdt_path_offset(fdt, "/chosen");
-    if (chosen < 0) {
-        uart_puts("initrd not found\n");
-        return;
-    }
-
-    const uint32_t *prop;
-
-    prop = (const uint32_t *)fdt_getprop(fdt, chosen,
-                                         "linux,initrd-start", &len);
-
-    if (prop && len == 8)
-        initrd_start = read_cells(prop, 2);
-    else if (prop && len == 4)
-        initrd_start = read_cells(prop, 1);
-
-    prop = (const uint32_t *)fdt_getprop(fdt, chosen,
-                                         "linux,initrd-end", &len);
-
-    if (prop && len == 8)
-        initrd_end = read_cells(prop, 2);
-    else if (prop && len == 4)
-        initrd_end = read_cells(prop, 1);
-
-    if (!initrd_start || !initrd_end) {
-        uart_puts("initrd not found\n");
-        return;
-    }
-
-    uart_puts("initrd start = ");
-    uart_hex(initrd_start);
-    uart_puts("\n");
-
-    uart_puts("initrd end   = ");
-    uart_hex(initrd_end);
-    uart_puts("\n");
-}
-
-/* ---------- initrd commands ---------- */
-
+/* ---------- initramfs / cpio ---------- */
 struct cpio_t {
     char magic[6];
     char ino[8];
@@ -496,47 +505,25 @@ struct cpio_t {
     char check[8];
 };
 
-static int hextoi_simple(const char *s, int n) {
-    int r = 0;
-
-    while (n-- > 0) {
-        r <<= 4;
-
-        if (*s >= '0' && *s <= '9')
-            r += *s - '0';
-        else if (*s >= 'A' && *s <= 'F')
-            r += *s - 'A' + 10;
-
-        s++;
-    }
-
-    return r;
-}
-
-static int align_int(int n, int byte) {
-    return (n + byte - 1) & ~(byte - 1);
-}
-
 static void initrd_list(const void *rd) {
     const char *p = (const char *)rd;
 
-    while (1) {
+    while (p && p < (const char *)initrd_end) {
         const struct cpio_t *hdr = (const struct cpio_t *)p;
 
-        if (strncmp_simple(hdr->magic, "070701", 6) != 0) {
+        if (memcmp_simple(hdr->magic, "070701", 6) != 0) {
             uart_puts("invalid cpio archive\n");
             return;
         }
 
         int namesize = hextoi_simple(hdr->namesize, 8);
         int filesize = hextoi_simple(hdr->filesize, 8);
-
         const char *name = p + sizeof(struct cpio_t);
 
         if (strcmp_full(name, "TRAILER!!!") == 0)
             return;
 
-        uart_put_uint((unsigned int)filesize);
+        uart_put_ulong((unsigned long)filesize);
         uart_putc(' ');
         uart_puts(name);
         uart_putc('\n');
@@ -546,45 +533,187 @@ static void initrd_list(const void *rd) {
     }
 }
 
-static void initrd_cat(const void *rd, const char *filename) {
-    const char *p = (const char *)rd;
+static const void *initrd_find(const char *filename, int *filesize_out) {
+    const char *p = (const char *)initrd_start;
 
-    while (1) {
+    while (p && p < (const char *)initrd_end) {
         const struct cpio_t *hdr = (const struct cpio_t *)p;
 
-        if (strncmp_simple(hdr->magic, "070701", 6) != 0) {
-            uart_puts("invalid cpio archive\n");
-            return;
-        }
+        if (memcmp_simple(hdr->magic, "070701", 6) != 0)
+            return 0;
 
         int namesize = hextoi_simple(hdr->namesize, 8);
         int filesize = hextoi_simple(hdr->filesize, 8);
-
         const char *name = p + sizeof(struct cpio_t);
+        const char *data = p + align_int(sizeof(struct cpio_t) + namesize, 4);
 
         if (strcmp_full(name, "TRAILER!!!") == 0)
             break;
 
-        const char *data = p + align_int(sizeof(struct cpio_t) + namesize, 4);
+        const char *cmp_name = name;
+        if (cmp_name[0] == '.' && cmp_name[1] == '/')
+            cmp_name += 2;
 
-        if (strcmp_full(name, filename) == 0) {
-            for (int i = 0; i < filesize; i++)
-                uart_putc(data[i]);
-
-            uart_putc('\n');
-            return;
+        if (strcmp_full(cmp_name, filename) == 0) {
+            if (filesize_out)
+                *filesize_out = filesize;
+            return data;
         }
 
         p = data + align_int(filesize, 4);
     }
 
-    uart_puts("initrd_cat: ");
-    uart_puts(filename);
-    uart_puts(": No such file\n");
+    return 0;
 }
 
-/* ---------- Self relocation ---------- */
+static void initrd_cat(const void *rd, const char *filename) {
+    (void)rd;
+    int size = 0;
+    const char *data = (const char *)initrd_find(filename, &size);
 
+    if (!data) {
+        uart_puts("initrd_cat: ");
+        uart_puts(filename);
+        uart_puts(": No such file\n");
+        return;
+    }
+
+    for (int i = 0; i < size; i++)
+        uart_putc(data[i]);
+    uart_putc('\n');
+}
+
+/* ---------- load command ---------- */
+static unsigned int uart_get_u32_raw(void) {
+    unsigned int x = 0;
+    x |= (unsigned int)uart_getb_raw();
+    x |= (unsigned int)uart_getb_raw() << 8;
+    x |= (unsigned int)uart_getb_raw() << 16;
+    x |= (unsigned int)uart_getb_raw() << 24;
+    return x;
+}
+
+static void boot_loaded_kernel(const void *fdt) {
+    void (*kernel_entry)(unsigned long hartid, const void *fdt);
+    kernel_entry = (void (*)(unsigned long, const void *))LOAD_ADDR;
+    asm volatile("fence.i" ::: "memory");
+    kernel_entry(0, fdt);
+}
+
+static void shell_load(void) {
+    uart_puts("Waiting for kernel image...\n");
+
+    unsigned int magic = uart_get_u32_raw();
+    if (magic != BOOT_MAGIC) {
+        uart_puts("Bad magic.\n");
+        return;
+    }
+
+    unsigned int size = uart_get_u32_raw();
+    uart_puts("Receiving kernel...\n");
+
+    unsigned char *dst = (unsigned char *)LOAD_ADDR;
+    for (unsigned int i = 0; i < size; i++)
+        dst[i] = uart_getb_raw();
+
+    uart_puts("Waiting for cpio archive...\n");
+
+    magic = uart_get_u32_raw();
+    if (magic != BOOT_MAGIC) {
+        uart_puts("Bad cpio magic.\n");
+        return;
+    }
+
+    unsigned int cpio_size = uart_get_u32_raw();
+    uart_puts("Receiving cpio...\n");
+
+    unsigned char *cpio_dst = (unsigned char *)CPIO_LOAD_ADDR;
+    for (unsigned int i = 0; i < cpio_size; i++)
+        cpio_dst[i] = uart_getb_raw();
+
+    void *new_fdt = make_writable_fdt_copy(boot_fdt);
+    if (!new_fdt)
+        return;
+
+    update_initrd_in_fdt(new_fdt,
+                         (unsigned long)CPIO_LOAD_ADDR,
+                         (unsigned long)CPIO_LOAD_ADDR + cpio_size);
+
+    uart_puts("new fdt = ");
+    uart_hex((unsigned long)new_fdt);
+    uart_puts("\n");
+    uart_puts("new initrd start = ");
+    uart_hex((unsigned long)CPIO_LOAD_ADDR);
+    uart_puts("\n");
+    uart_puts("new initrd end   = ");
+    uart_hex((unsigned long)CPIO_LOAD_ADDR + cpio_size);
+    uart_puts("\n");
+
+    uart_puts("Booting loaded kernel...\n");
+    local_irq_disable();
+    boot_loaded_kernel(new_fdt);
+}
+
+/* ---------- shell ---------- */
+static void print_prompt(void) {
+    uart_puts("opi-rv2> ");
+}
+
+static void shell_help(void) {
+    uart_puts("Available commands:\n");
+    uart_puts("    help     - show all commands.\n");
+    uart_puts("    hello    - print Hello world.\n");
+    uart_puts("    info     - print system info.\n");
+    uart_puts("    load     - load a kernel and cpio over UART.\n");
+    uart_puts("    ls       - list files in initramfs.\n");
+    uart_puts("    cat      - show file content.\n");
+    uart_puts("    memtest  - run memory allocator test.\n");
+}
+
+static void shell_info(void) {
+    uart_puts("System information:\n");
+    uart_puts("    OpenSBI specification version: ");
+    uart_hex(sbi_get_spec_version());
+    uart_puts("\n");
+
+    uart_puts("    implementation ID: ");
+    uart_hex(sbi_get_impl_id());
+    uart_puts("\n");
+
+    uart_puts("    implementation version: ");
+    uart_hex(sbi_get_impl_version());
+    uart_puts("\n");
+}
+
+static void shell_execute(const char *cmd) {
+    if (strcmp_simple(cmd, "help")) {
+        shell_help();
+    } else if (strcmp_simple(cmd, "hello")) {
+        uart_puts("Hello world.\n");
+    } else if (strcmp_simple(cmd, "info")) {
+        shell_info();
+    } else if (strcmp_simple(cmd, "load")) {
+        shell_load();
+    } else if (strcmp_simple(cmd, "ls")) {
+        if (initrd_start)
+            initrd_list(initrd_start);
+        else
+            uart_puts("initrd not found\n");
+    } else if (strncmp_simple(cmd, "cat ", 4) == 0) {
+        if (initrd_start)
+            initrd_cat(initrd_start, cmd + 4);
+        else
+            uart_puts("initrd not found\n");
+    } else if (strcmp_simple(cmd, "memtest")) {
+        test_alloc_1();
+    } else if (cmd[0] != '\0') {
+        uart_puts("Unknown command: ");
+        uart_puts(cmd);
+        uart_puts("\nUse help to get commands.\n");
+    }
+}
+
+/* ---------- self relocation ---------- */
 static void relocate_self(const void *fdt) {
     unsigned char *src = (unsigned char *)_start;
     unsigned char *dst = (unsigned char *)RELOC_ADDR;
@@ -593,159 +722,35 @@ static void relocate_self(const void *fdt) {
     for (unsigned long i = 0; i < size; i++)
         dst[i] = src[i];
 
-    unsigned long new_sp =
-        RELOC_ADDR + ((unsigned long)_end - (unsigned long)_start);
+    unsigned long kernel_size = (unsigned long)_end - (unsigned long)_start;
+    unsigned long new_sp = RELOC_ADDR + kernel_size + KERNEL_STACK_SIZE;
+    new_sp &= ~0xFUL;
 
-    asm volatile("mv sp, %0" :: "r"(new_sp));
+    asm volatile("mv sp, %0" :: "r"(new_sp) : "memory");
 
     void (*entry)(const void *) =
-        (void (*)(const void *))
-        (RELOC_ADDR +
-         ((unsigned long)start_kernel - (unsigned long)_start));
+        (void (*)(const void *))(RELOC_ADDR + ((unsigned long)start_kernel - (unsigned long)_start));
 
     asm volatile("fence.i" ::: "memory");
-
     entry(fdt);
 }
 
-/* ---------- load command ---------- */
-
-static unsigned int uart_get_u32(void) {
-    unsigned int x = 0;
-
-    x |= (unsigned int)uart_getb();
-    x |= (unsigned int)uart_getb() << 8;
-    x |= (unsigned int)uart_getb() << 16;
-    x |= (unsigned int)uart_getb() << 24;
-
-    return x;
-}
-
-static void boot_loaded_kernel(void) {
-    void (*kernel_entry)(unsigned long hartid, const void *fdt);
-
-    kernel_entry =
-        (void (*)(unsigned long, const void *))LOAD_ADDR;
-
-    asm volatile("fence.i" ::: "memory");
-
-    kernel_entry(0, boot_fdt);
-}
-
-static void shell_load(void) {
-    uart_puts("Waiting for kernel image...\n");
-
-    unsigned int magic = uart_get_u32();
-
-    if (magic != BOOT_MAGIC) {
-        uart_puts("Bad magic.\n");
-        return;
-    }
-
-    unsigned int size = uart_get_u32();
-
-    uart_puts("Receiving kernel...\n");
-
-    for (unsigned int i = 0; i < size; i++)
-        LOAD_ADDR[i] = uart_getb();
-
-    asm volatile("fence.i" ::: "memory");
-
-    uart_puts("Booting loaded kernel...\n");
-
-    boot_loaded_kernel();
-}
-
-/* ---------- Shell ---------- */
-
-static void print_prompt(void) {
-    uart_puts("opi-rv2> ");
-}
-
-static void shell_help(void) {
-    uart_puts("Available commands:\n");
-    uart_puts("    help    - show all commands.\n");
-    uart_puts("    hello   - print Hello world.\n");
-    uart_puts("    info    - print system info.\n");
-    uart_puts("    load    - load next kernel over UART.\n");
-    uart_puts("    ls      - list files in initramfs.\n");
-    uart_puts("    cat     - print file content.\n");
-    uart_puts("    memtest - run Lab3 allocator test.\n");
-    
-}
-
-static void shell_hello(void) {
-    uart_puts("Hello world.\n");
-}
-
-static void shell_info(void) {
-    uart_puts("System information:\n");
-
-    uart_puts("    OpenSBI specification version: ");
-    uart_hex((unsigned long)sbi_get_spec_version());
-    uart_puts("\n");
-
-    uart_puts("    implementation ID: ");
-    uart_hex((unsigned long)sbi_get_impl_id());
-    uart_puts("\n");
-
-    uart_puts("    implementation version: ");
-    uart_hex((unsigned long)sbi_get_impl_version());
-    uart_puts("\n");
-}
-
-static void shell_execute(const char *cmd) {
-    if (strcmp_cmd(cmd, "help")) {
-        shell_help();
-    } else if (strcmp_cmd(cmd, "hello")) {
-        shell_hello();
-    } else if (strcmp_cmd(cmd, "info")) {
-        shell_info();
-    } else if (strcmp_cmd(cmd, "ls")) {
-        if (initrd_start)
-            initrd_list((const void *)initrd_start);
-        else
-            uart_puts("initrd not found\n");
-    } else if (strncmp_simple(cmd, "cat ", 4) == 0) {
-        if (initrd_start)
-            initrd_cat((const void *)initrd_start, cmd + 4);
-        else
-            uart_puts("initrd not found\n");
-    } else if (strcmp_cmd(cmd, "memtest")) {
-        test_alloc_1();
-    } else if (strcmp_cmd(cmd, "load")) {
-        shell_load();
-    } else if (cmd[0] != '\0') {
-        uart_puts("Unknown command: ");
-        uart_puts(cmd);
-        uart_puts("\n");
-        uart_puts("Use help to get commands.\n");
-    }
-}
-
-/* ---------- Kernel entry ---------- */
-
+/* ---------- kernel entry ---------- */
 void start_kernel(const void *fdt) {
+    local_irq_disable();
     boot_fdt = fdt;
+    uart_set_base(UART_BASE);
 
-    uart_set_base(0xd4017000UL);
-    uart_set_config(2, 4);
-
-    /*
-     * Lab3 is first loaded to 0x00200000.
-     * Relocate it to 0x20000000 so that future load commands can reuse
-     * 0x00200000 for Lab4 / Lab5 / later kernels.
-     */
     if ((unsigned long)_start < RELOC_ADDR) {
-        uart_puts("\nRelocating kernel...");
+        uart_puts("\nRelocating kernel...\n");
         relocate_self(fdt);
         while (1) {}
     }
 
-    char buf[128];
+    char buf[160];
     int idx = 0;
 
-    uart_puts("\nRelocated kernel running.\n\n");
+    uart_puts("\nStarting kernel ...\n");
 
     uart_puts("fdt ptr = ");
     uart_hex((unsigned long)fdt);
@@ -753,24 +758,23 @@ void start_kernel(const void *fdt) {
 
     uart_init_from_dtb(fdt);
     initrd_init_from_dtb(fdt);
+    mm_init_advanced(fdt, (unsigned long)initrd_start, (unsigned long)initrd_end);
+    uart_puts("memory allocator ready\n");
 
-    mm_init_advanced(fdt, initrd_start, initrd_end);
-
-    uart_puts("\nStarting kernel ...\n");
-    uart_puts("Type help to get commands.\n\n");
-
+    uart_puts("\nType help to get commands.\n\n");
     print_prompt();
 
     while (1) {
         char c = uart_getc();
 
-        if (c == '\n') {
+        if (c == '\r' || c == '\n') {
             uart_putc('\n');
             buf[idx] = '\0';
             shell_execute(buf);
             idx = 0;
+            uart_putc('\n');
             print_prompt();
-        } else if (c == 8 || c == 127) {
+        } else if (c == 127 || c == '\b') {
             if (idx > 0) {
                 idx--;
                 uart_puts("\b \b");

@@ -3,6 +3,9 @@
 #include <stddef.h>
 
 /* ---------- UART from uart.c ---------- */
+extern char uart_getc_polling(void);
+extern void uart_putc_polling(char c);
+extern void uart_puts_polling(const char *s);
 extern char uart_getc(void);
 extern void uart_putc(char c);
 extern void uart_puts(const char *s);
@@ -13,6 +16,10 @@ extern void uart_set_base(unsigned long base);
 extern void uart_set_config(int reg_shift, int reg_io_width);
 extern unsigned int uart_read_reg(int off);
 extern void uart_write_reg(int off, unsigned int val);
+static volatile unsigned long uart_rx_irq_count = 0;
+static volatile unsigned long ext_irq_count = 0;
+static volatile unsigned long uart_irq_count = 0;
+static volatile int last_irq = 0;
 
 /* ---------- Linker symbols ---------- */
 extern char _start[];
@@ -22,8 +29,12 @@ extern void handle_exception(void);
 
 /* ---------- Boot / load / relocation ---------- */
 #define LOAD_ADDR   ((unsigned char *)0x00200000UL)
+#define CPIO_LOAD_ADDR ((unsigned char *)0x03000000UL)
+#define NEW_FDT_ADDR  ((unsigned char *)0x03F00000UL)
+#define NEW_FDT_SIZE  0x400000UL
 #define RELOC_ADDR  0x20000000UL
 #define BOOT_MAGIC  0x544F4F42UL
+#define KERNEL_STACK_SIZE (128 * 1024UL)
 
 static const void *boot_fdt;
 
@@ -43,12 +54,25 @@ static const void *boot_fdt;
 #define UART_LSR_DR   (1 << 0)
 #define UART_LSR_THRE (1 << 5)
 
-#define PLIC_BASE             0xE0000000UL
 #define PLIC_CONTEXT(hart)    ((hart) * 2 + 1)  /* S-mode context */
-#define PLIC_PRIORITY(irq)    (PLIC_BASE + (irq) * 4)
-#define PLIC_ENABLE(ctx)      (PLIC_BASE + 0x2000 + (ctx) * 0x80)
-#define PLIC_THRESHOLD(ctx)   (PLIC_BASE + 0x200000 + (ctx) * 0x1000)
-#define PLIC_CLAIM(ctx)       (PLIC_BASE + 0x200004 + (ctx) * 0x1000)
+
+static unsigned long plic_base = 0;
+
+static inline unsigned long plic_priority_addr(int irq) {
+    return plic_base + (unsigned long)irq * 4UL;
+}
+
+static inline unsigned long plic_enable_addr(int ctx) {
+    return plic_base + 0x2000UL + (unsigned long)ctx * 0x80UL;
+}
+
+static inline unsigned long plic_threshold_addr(int ctx) {
+    return plic_base + 0x200000UL + (unsigned long)ctx * 0x1000UL;
+}
+
+static inline unsigned long plic_claim_addr(int ctx) {
+    return plic_base + 0x200004UL + (unsigned long)ctx * 0x1000UL;
+}
 
 static unsigned long boot_cpu_hartid = 0;
 static int uart_irq_id = 42;
@@ -61,6 +85,44 @@ static inline unsigned int read32(unsigned long addr) {
     return *(volatile unsigned int *)addr;
 }
 
+static void dbg_delay(void) {
+    for (volatile unsigned long i = 0; i < 200000; i++) {
+        asm volatile("nop");
+    }
+}
+
+static void dbg_putc(char c) {
+    unsigned long timeout = 1000000;
+
+    while (!(uart_read_reg(UART_LSR) & UART_LSR_THRE)) {
+        if (--timeout == 0)
+            return;
+    }
+
+    uart_write_reg(UART_THR, (unsigned char)c);
+    dbg_delay();
+}
+
+static void dbg_puts(const char *s) {
+    while (*s) {
+        if (*s == '\n')
+            dbg_putc('\r');
+        dbg_putc(*s++);
+    }
+}
+
+static unsigned int uart_ier_shadow;
+
+static void uart_enable_tx_irq(void) {
+    uart_ier_shadow |= UART_IER_RX | UART_IER_TX;
+    uart_write_reg(UART_IER, uart_ier_shadow);
+}
+
+static void uart_disable_tx_irq(void) {
+    uart_ier_shadow &= ~UART_IER_TX;
+    uart_ier_shadow |= UART_IER_RX;
+    uart_write_reg(UART_IER, uart_ier_shadow);
+}
 /* ---------- CSR / trap constants ---------- */
 #define SSTATUS_SIE  (1UL << 1)
 #define SSTATUS_SPIE (1UL << 5)
@@ -317,6 +379,42 @@ static void uart_put_uint(unsigned long x) {
         uart_putc(buf[--i]);
 }
 
+/*
+ * Trap/debug output must not depend on the asynchronous TX ring.
+ * When a trap is taken from U-mode, SIE is cleared by hardware; if the
+ * async console waits for TX interrupts to drain the ring, it can sleep in
+ * wfi forever.  Keep trap diagnostics on polling UART.
+ */
+static void trap_puts(const char *s) {
+    uart_puts_polling(s);
+}
+
+static void trap_put_uint(unsigned long x) {
+    char buf[32];
+    int i = 0;
+
+    if (x == 0) {
+        uart_putc_polling('0');
+        return;
+    }
+
+    while (x > 0) {
+        buf[i++] = (char)('0' + (x % 10));
+        x /= 10;
+    }
+
+    while (i > 0)
+        uart_putc_polling(buf[--i]);
+}
+
+static void trap_hex(unsigned long h) {
+    const char *hex = "0123456789abcdef";
+
+    trap_puts("0x");
+    for (int i = (int)(sizeof(unsigned long) * 2) - 1; i >= 0; i--)
+        uart_putc_polling(hex[(h >> (i * 4)) & 0xf]);
+}
+
 /* ---------- FDT parser ---------- */
 #define FDT_BEGIN_NODE 0x00000001
 #define FDT_END_NODE   0x00000002
@@ -349,6 +447,31 @@ static unsigned long read_cells(const uint32_t *p, int cells) {
     for (int i = 0; i < cells; i++)
         v = (v << 32) | bswap32_main(p[i]);
     return v;
+}
+
+static int fdt_is_valid(const void *fdt) {
+    if (!fdt)
+        return 0;
+
+    const struct fdt_header *hdr = (const struct fdt_header *)fdt;
+    return bswap32_main(hdr->magic) == 0xd00dfeed;
+}
+
+static int bytes_contains_string(const char *buf, int len, const char *needle) {
+    size_t nlen = strlen_simple(needle);
+
+    if (!buf || !needle || nlen == 0 || len <= 0)
+        return 0;
+
+    for (int i = 0; i + (int)nlen <= len; i++) {
+        size_t j = 0;
+        while (j < nlen && buf[i + (int)j] == needle[j])
+            j++;
+        if (j == nlen)
+            return 1;
+    }
+
+    return 0;
 }
 
 int fdt_path_offset(const void *fdt, const char *path) {
@@ -496,6 +619,60 @@ const void *fdt_getprop(const void *fdt, int nodeoffset,
     return 0;
 }
 
+
+static void fdt_write_u64_prop(void *fdt, int node, const char *name,
+                               unsigned long value) {
+    int len = 0;
+    uint32_t *prop = (uint32_t *)fdt_getprop(fdt, node, name, &len);
+
+    if (!prop || len < 8) {
+        uart_puts("fdt prop missing: ");
+        uart_puts(name);
+        uart_puts("\n");
+        return;
+    }
+
+    prop[0] = bswap32_main((uint32_t)(value >> 32));
+    prop[1] = bswap32_main((uint32_t)(value & 0xffffffffUL));
+}
+
+static void *make_writable_fdt_copy(const void *old_fdt) {
+    if (!fdt_is_valid(old_fdt)) {
+        uart_puts("invalid fdt\n");
+        return 0;
+    }
+
+    const struct fdt_header *old_hdr = (const struct fdt_header *)old_fdt;
+    unsigned int old_size = bswap32_main(old_hdr->totalsize);
+
+    if (old_size > NEW_FDT_SIZE) {
+        uart_puts("new fdt buffer too small\n");
+        return 0;
+    }
+
+    unsigned char *dst = NEW_FDT_ADDR;
+    const unsigned char *src = (const unsigned char *)old_fdt;
+
+    for (unsigned int i = 0; i < old_size; i++)
+        dst[i] = src[i];
+
+    return (void *)dst;
+}
+
+static void update_initrd_in_fdt(void *fdt,
+                                 unsigned long initrd_start_addr,
+                                 unsigned long initrd_end_addr) {
+    int chosen = fdt_path_offset(fdt, "/chosen");
+
+    if (chosen < 0) {
+        uart_puts("/chosen not found\n");
+        return;
+    }
+
+    fdt_write_u64_prop(fdt, chosen, "linux,initrd-start", initrd_start_addr);
+    fdt_write_u64_prop(fdt, chosen, "linux,initrd-end", initrd_end_addr);
+}
+
 static const void *initrd_start = 0;
 static const void *initrd_end = 0;
 static unsigned long timebase_frequency = 10000000UL;
@@ -505,7 +682,6 @@ static void initrd_init_from_dtb(const void *fdt) {
     int len;
 
     if (offset < 0) {
-        uart_puts("initrd not found\n");
         return;
     }
 
@@ -513,9 +689,11 @@ static void initrd_init_from_dtb(const void *fdt) {
     if (startp)
         initrd_start = (const void *)read_cells((const uint32_t *)startp, len / 4);
 
+
     const void *endp = fdt_getprop(fdt, offset, "linux,initrd-end", &len);
     if (endp)
         initrd_end = (const void *)read_cells((const uint32_t *)endp, len / 4);
+
 
     uart_puts("initrd start = ");
     uart_hex((unsigned long)initrd_start);
@@ -527,6 +705,10 @@ static void initrd_init_from_dtb(const void *fdt) {
 
 static void uart_init_from_dtb(const void *fdt) {
     int len;
+    unsigned long uart_base = UART_BASE;
+    int reg_shift = 2;
+    int reg_width = 4;
+
     int node = fdt_path_offset(fdt, "/soc/serial@d4017000");
     if (node < 0)
         node = fdt_path_offset(fdt, "/soc/serial");
@@ -534,50 +716,127 @@ static void uart_init_from_dtb(const void *fdt) {
         node = fdt_path_offset(fdt, "/soc/uart");
 
     if (node < 0) {
-        uart_set_base(UART_BASE);
-        uart_set_config(2, 4);
+        uart_set_base(uart_base);
+        uart_set_config(reg_shift, reg_width);
         uart_irq_id = 42;
-        return;
-    }
-
-    const uint32_t *reg = (const uint32_t *)fdt_getprop(fdt, node, "reg", &len);
-    if (reg && len >= 16) {
-        unsigned long base = read_cells(reg, 2);
-        uart_set_base(base);
     } else {
-        uart_set_base(UART_BASE);
+        const uint32_t *reg = (const uint32_t *)fdt_getprop(fdt, node, "reg", &len);
+        if (reg && len >= 16)
+            uart_base = read_cells(reg, 2);
+
+
+        int shift_len = 0;
+        int width_len = 0;
+        const uint32_t *shift = (const uint32_t *)fdt_getprop(fdt, node, "reg-shift", &shift_len);
+        const uint32_t *width = (const uint32_t *)fdt_getprop(fdt, node, "reg-io-width", &width_len);
+        reg_shift = (shift && shift_len >= 4) ? (int)bswap32_main(shift[0]) : 2;
+        reg_width = (width && width_len >= 4) ? (int)bswap32_main(width[0]) : 4;
+
+        const uint32_t *irq = (const uint32_t *)fdt_getprop(fdt, node, "interrupts", &len);
+        if (irq && len >= 4)
+            uart_irq_id = (int)bswap32_main(irq[0]);
+
+
+        uart_set_base(uart_base);
+        uart_set_config(reg_shift, reg_width);
     }
 
-    int shift_len = 0;
-    int width_len = 0;
-    const uint32_t *shift = (const uint32_t *)fdt_getprop(fdt, node, "reg-shift", &shift_len);
-    const uint32_t *width = (const uint32_t *)fdt_getprop(fdt, node, "reg-io-width", &width_len);
-    int reg_shift = (shift && shift_len >= 4) ? (int)bswap32_main(shift[0]) : 2;
-    int reg_width = (width && width_len >= 4) ? (int)bswap32_main(width[0]) : 4;
-    uart_set_config(reg_shift, reg_width);
-
-    const uint32_t *irq = (const uint32_t *)fdt_getprop(fdt, node, "interrupts", &len);
-    if (irq && len >= 4)
-        uart_irq_id = (int)bswap32_main(irq[0]);
-
+    uart_puts("uart base from dtb = ");
+    uart_hex(uart_base);
+    uart_puts("\n");
+    uart_puts("uart reg shift = ");
+    uart_hex((unsigned long)reg_shift);
+    uart_puts("\n");
+    uart_puts("uart reg width = ");
+    uart_hex((unsigned long)reg_width);
+    uart_puts("\n");
     uart_puts("uart irq = ");
     uart_put_uint((unsigned long)uart_irq_id);
     uart_puts("\n");
 }
 
+static int fdt_find_plic_node(const void *fdt) {
+    if (!fdt_is_valid(fdt))
+        return -1;
+
+    const struct fdt_header *hdr = (const struct fdt_header *)fdt;
+    const char *struct_base = (const char *)fdt + bswap32_main(hdr->off_dt_struct);
+    const char *p = struct_base;
+
+    while (1) {
+        int nodeoff = (int)(p - struct_base);
+        uint32_t tag = bswap32_main(*(const uint32_t *)p);
+        p += 4;
+
+        if (tag == FDT_BEGIN_NODE) {
+            const char *name = p;
+            int len = 0;
+            const char *compat = (const char *)fdt_getprop(fdt, nodeoff, "compatible", &len);
+            const void *ndev = fdt_getprop(fdt, nodeoff, "riscv,ndev", 0);
+
+            if ((compat &&
+                 (bytes_contains_string(compat, len, "riscv,plic0") ||
+                  bytes_contains_string(compat, len, "sifive,plic-1.0.0") ||
+                  bytes_contains_string(compat, len, "plic"))) ||
+                ndev) {
+                return nodeoff;
+            }
+
+            p = (const char *)align_up_ptr(p + strlen_simple(name) + 1, 4);
+        } else if (tag == FDT_PROP) {
+            uint32_t len = bswap32_main(*(const uint32_t *)p);
+            p += 8;
+            p = (const char *)align_up_ptr(p + len, 4);
+        } else if (tag == FDT_END_NODE) {
+        } else if (tag == FDT_NOP) {
+        } else if (tag == FDT_END) {
+            break;
+        } else {
+            return -1;
+        }
+    }
+
+    return -1;
+}
+
+static void plic_init_from_dtb(const void *fdt) {
+    int len = 0;
+    int node = fdt_find_plic_node(fdt);
+
+    if (node < 0) {
+        return;
+    }
+
+    const uint32_t *reg = (const uint32_t *)fdt_getprop(fdt, node, "reg", &len);
+    if (!reg || len < 8) {
+        return;
+    }
+
+    if (len >= 16)
+        plic_base = read_cells(reg, 2);
+    else
+        plic_base = read_cells(reg, 1);
+
+    uart_puts("plic base = ");
+    uart_hex(plic_base);
+    uart_puts("\n");
+}
+
 static void timer_frequency_init_from_dtb(const void *fdt) {
     int cpus = fdt_path_offset(fdt, "/cpus");
-    if (cpus < 0)
+    if (cpus < 0) {
         return;
+    }
 
     int len;
     const uint32_t *prop = (const uint32_t *)fdt_getprop(fdt, cpus, "timebase-frequency", &len);
-    if (prop && len >= 4) {
+    if (prop && len >= 4)
         timebase_frequency = bswap32_main(prop[0]);
-        uart_puts("timebase-frequency = ");
-        uart_put_uint(timebase_frequency);
-        uart_puts("\n");
-    }
+
+
+    uart_puts("timebase-frequency = ");
+    uart_put_uint(timebase_frequency);
+    uart_puts("\n");
 }
 
 /* ---------- CPIO / initramfs ---------- */
@@ -598,6 +857,11 @@ struct cpio_t {
     char check[8];
 };
 
+static void console_putc_async(char c);
+static void console_puts_async(const char *s);
+static void console_hex_async(unsigned long h);
+static void console_put_uint_async(unsigned long x);
+
 static void initrd_list(const void *rd) {
     const char *p = (const char *)rd;
 
@@ -605,7 +869,7 @@ static void initrd_list(const void *rd) {
         const struct cpio_t *hdr = (const struct cpio_t *)p;
 
         if (memcmp_simple(hdr->magic, "070701", 6) != 0) {
-            uart_puts("invalid cpio archive\n");
+            console_puts_async("invalid cpio archive\n");
             return;
         }
 
@@ -616,10 +880,10 @@ static void initrd_list(const void *rd) {
         if (strcmp_full(name, "TRAILER!!!") == 0)
             return;
 
-        uart_put_uint((unsigned int)filesize);
-        uart_putc(' ');
-        uart_puts(name);
-        uart_putc('\n');
+        console_put_uint_async((unsigned int)filesize);
+		console_putc_async(' ');
+		console_puts_async(name);
+		console_putc_async('\n');
 
         const char *data = p + align_int(sizeof(struct cpio_t) + namesize, 4);
         p = data + align_int(filesize, 4);
@@ -665,15 +929,15 @@ static void initrd_cat(const void *rd, const char *filename) {
     const char *data = (const char *)initrd_find(filename, &size);
 
     if (!data) {
-        uart_puts("initrd_cat: ");
-        uart_puts(filename);
-        uart_puts(": No such file\n");
+        console_puts_async("initrd_cat: ");
+		console_puts_async(filename);
+		console_puts_async(": No such file\n");
         return;
     }
 
     for (int i = 0; i < size; i++)
-        uart_putc(data[i]);
-    uart_putc('\n');
+        console_putc_async(data[i]);
+    console_putc_async('\n');
 }
 
 /* ---------- Ring buffer for asynchronous UART RX/TX ---------- */
@@ -686,6 +950,7 @@ struct ringbuf {
 
 static struct ringbuf rx_ring;
 static struct ringbuf tx_ring;
+static int async_console_enabled = 0;
 
 static int ring_empty(struct ringbuf *rb) {
     return rb->r == rb->w;
@@ -709,6 +974,81 @@ static int ring_pop(struct ringbuf *rb, char *c) {
     *c = rb->buf[rb->r];
     rb->r = (rb->r + 1) % RING_SIZE;
     return 1;
+}
+
+static void ring_clear(struct ringbuf *rb) {
+    rb->r = 0;
+    rb->w = 0;
+}
+
+static void uart_kick_tx(void) {
+    if (!ring_empty(&tx_ring) && (uart_read_reg(UART_LSR) & UART_LSR_THRE)) {
+        char c;
+        if (ring_pop(&tx_ring, &c))
+            uart_write_reg(UART_THR, (unsigned char)c);
+    }
+
+    if (!ring_empty(&tx_ring))
+        uart_enable_tx_irq();
+    else
+        uart_disable_tx_irq();
+}
+
+static void console_putc_async(char c) {
+    unsigned long flags;
+
+    if (!async_console_enabled) {
+        uart_putc_polling(c);
+        return;
+    }
+
+    if (c == '\n')
+        console_putc_async('\r');
+
+    while (1) {
+        flags = irq_save();
+
+        if (!ring_full(&tx_ring)) {
+            ring_push(&tx_ring, c);
+            uart_kick_tx();
+            irq_restore(flags);
+            return;
+        }
+
+        irq_restore(flags);
+        asm volatile("wfi");
+    }
+}
+
+static void console_puts_async(const char *s) {
+    while (*s)
+        console_putc_async(*s++);
+}
+
+static void console_hex_async(unsigned long h) {
+    const char *hex = "0123456789abcdef";
+    console_puts_async("0x");
+    for (int i = (int)(sizeof(unsigned long) * 2) - 1; i >= 0; i--) {
+        console_putc_async(hex[(h >> (i * 4)) & 0xf]);
+    }
+}
+
+static void console_put_uint_async(unsigned long x) {
+    char buf[32];
+    int i = 0;
+
+    if (x == 0) {
+        console_putc_async('0');
+        return;
+    }
+
+    while (x > 0) {
+        buf[i++] = (char)('0' + (x % 10));
+        x /= 10;
+    }
+
+    while (i > 0)
+        console_putc_async(buf[--i]);
 }
 
 /* ---------- Task queue: advanced exercise 2 ---------- */
@@ -823,85 +1163,134 @@ static void enqueue_uart_rx_task(char c) {
 static char console_getc(void) {
     char c;
 
-    while (1) {
-        /*
-         * Path 1:
-         * 如果 UART RX interrupt 有成功進來，
-         * handle_uart_interrupt() 會把字元放進 rx_ring。
-         */
-        if (ring_pop(&rx_ring, &c))
-            return c == '\r' ? '\n' : c;
-
-        /*
-         * Path 2:
-         * RV2 上如果 UART interrupt / PLIC source 還沒完全對，
-         * 至少直接 polling UART LSR/RBR。
-         */
-        if (uart_read_reg(UART_LSR) & UART_LSR_DR) {
-            c = (char)(uart_read_reg(UART_RBR) & 0xff);
-            return c == '\r' ? '\n' : c;
-        }
+    while (!ring_pop(&rx_ring, &c)) {
+        run_tasks();
+        asm volatile("wfi");
     }
+
+    return c == '\r' ? '\n' : c;
 }
 
+/*
+ * Public UART console API.
+ *
+ * Lab4 asks uart_getc/uart_putc/uart_puts to be asynchronous.  The old
+ * busy-wait implementations are kept in uart.c as *_polling and are used
+ * only before interrupts/ring buffers are enabled or during binary load.
+ */
+char uart_getc(void) {
+    if (!async_console_enabled)
+        return uart_getc_polling();
+
+    return console_getc();
+}
+
+void uart_putc(char c) {
+    console_putc_async(c);
+}
+
+void uart_puts(const char *s) {
+    console_puts_async(s);
+}
+
+static void debug_putc_nowait(char c) {
+    if (uart_read_reg(UART_LSR) & UART_LSR_THRE)
+        uart_write_reg(UART_THR, (unsigned char)c);
+}
 /* ---------- PLIC / UART interrupt ---------- */
+
+
 static void plic_init(void) {
     int ctx = (int)PLIC_CONTEXT(boot_cpu_hartid);
 
-    write32(PLIC_PRIORITY(uart_irq_id), 1);
+    if (!plic_base) {
+        return;
+    }
 
-    unsigned long enable_addr = PLIC_ENABLE(ctx) + (unsigned long)(uart_irq_id / 32) * 4;
+    write32(plic_priority_addr(uart_irq_id), 1);
+
+    unsigned long enable_addr =
+        plic_enable_addr(ctx) + (unsigned long)(uart_irq_id / 32) * 4UL;
+
     unsigned int enable = read32(enable_addr);
     enable |= (1U << (uart_irq_id % 32));
     write32(enable_addr, enable);
 
-    write32(PLIC_THRESHOLD(ctx), 0);
-    enable_external_interrupt();
+    write32(plic_threshold_addr(ctx), 0);
 }
 
 static int plic_claim(void) {
     int ctx = (int)PLIC_CONTEXT(boot_cpu_hartid);
-    return (int)read32(PLIC_CLAIM(ctx));
+
+    if (!plic_base)
+        return 0;
+
+    return (int)read32(plic_claim_addr(ctx));
 }
 
 static void plic_complete(int irq) {
     int ctx = (int)PLIC_CONTEXT(boot_cpu_hartid);
-    write32(PLIC_CLAIM(ctx), (unsigned int)irq);
+
+    if (!plic_base)
+        return;
+
+    write32(plic_claim_addr(ctx), (unsigned int)irq);
 }
 
+#define UART_LCR_8N1 0x03
+
 static void uart_interrupt_init(void) {
-    /* Enable UART RX interrupt. TX interrupt is enabled only when tx_ring has data. */
-    uart_write_reg(UART_IER, uart_read_reg(UART_IER) | UART_IER_RX);
+    uart_ier_shadow = uart_read_reg(UART_IER);
+    uart_ier_shadow |= UART_IER_RX;
+    uart_write_reg(UART_IER, uart_ier_shadow);
+
+    unsigned int mcr = uart_read_reg(UART_MCR);
+    uart_write_reg(UART_MCR, mcr | UART_MCR_OUT2);
 }
 
 static void uart_interrupt_disable(void) {
-    uart_write_reg(UART_IER, 0);
+    uart_ier_shadow = uart_read_reg(UART_IER);
+    uart_ier_shadow &= ~(UART_IER_RX | UART_IER_TX);
+    uart_write_reg(UART_IER, uart_ier_shadow);
 }
 
 static void uart_interrupt_enable(void) {
-    uart_write_reg(UART_IER, UART_IER_RX);
+    uart_ier_shadow = uart_read_reg(UART_IER);
+    uart_ier_shadow |= UART_IER_RX;
+    uart_write_reg(UART_IER, uart_ier_shadow);
 }
 
 static void handle_uart_interrupt(void) {
     while (uart_read_reg(UART_LSR) & UART_LSR_DR) {
-        char c = (char)uart_read_reg(UART_RBR);
+        char c = (char)(uart_read_reg(UART_RBR) & 0xff);
         ring_push(&rx_ring, c == '\r' ? '\n' : c);
     }
 
-    while (!ring_empty(&tx_ring) && (uart_read_reg(UART_LSR) & UART_LSR_THRE)) {
+    while (!ring_empty(&tx_ring) &&
+           (uart_read_reg(UART_LSR) & UART_LSR_THRE)) {
         char c;
-        ring_pop(&tx_ring, &c);
-        uart_write_reg(UART_THR, (unsigned char)c);
+        if (ring_pop(&tx_ring, &c))
+            uart_write_reg(UART_THR, (unsigned char)c);
     }
 
     if (ring_empty(&tx_ring))
-        uart_write_reg(UART_IER, uart_read_reg(UART_IER) & ~UART_IER_TX);
+        uart_disable_tx_irq();
+    else
+        uart_enable_tx_irq();
 }
 
 /* ---------- Timer multiplexing: advanced exercise 1 ---------- */
 typedef void (*timer_callback_t)(void *arg);
 
-static int timer_boot_log_enabled = 1;
+static int timer_boot_log_enabled = 0;
+
+static void boot_time_task(void *arg) {
+    unsigned long sec = (unsigned long)arg;
+
+    console_puts_async("boot time: ");
+    console_put_uint_async(sec);
+    console_puts_async("\n");
+}
 
 #define MAX_TIMERS 64
 struct timer_event {
@@ -920,7 +1309,7 @@ static unsigned long ticks_per_sec(void) {
 }
 
 static unsigned long now_seconds(void) {
-    return read_time() / ticks_per_sec();
+    return (read_time() - boot_time_base) / ticks_per_sec();
 }
 
 static void program_next_timer(void) {
@@ -956,7 +1345,7 @@ void add_timer(timer_callback_t callback, void *arg, int sec) {
         }
     }
 
-    uart_puts("[Timer] queue full\n");
+    console_puts_async("[Timer] queue full\n");
 }
 
 struct timeout_message {
@@ -971,8 +1360,8 @@ static struct timeout_message timeout_messages[MAX_TIMERS];
 static void timeout_task(void *arg) {
     struct timeout_message *tm = (struct timeout_message *)arg;
 
-    uart_puts(tm->msg);
-    uart_puts("\n");
+    console_puts_async(tm->msg);
+    console_puts_async("\n");
 
     tm->used = 0;
 }
@@ -986,10 +1375,11 @@ static void handle_timer_interrupt(void) {
 
     while (next_periodic_tick && now >= next_periodic_tick) {
         if (timer_boot_log_enabled) {
-            uart_puts("boot time: ");
-            uart_put_uint((next_periodic_tick - boot_time_base) / ticks_per_sec());
-            uart_puts("\n");
-        }
+			unsigned long sec =
+				(next_periodic_tick - boot_time_base) / ticks_per_sec();
+
+			add_task(boot_time_task, (void *)sec, 2);
+		}
 
         next_periodic_tick += 2 * ticks_per_sec();
     }
@@ -1019,9 +1409,10 @@ static void timer_init(void) {
 
 /* ---------- exec user program: basic exercise 1 ---------- */
 static unsigned long user_return_addr = 0;
+static unsigned long user_kernel_sp = 0;
 static int user_mode_running = 0;
-static int user_ecall_count = 0;
-static int user_ecall_limit = 5;
+
+#define SYS_EXIT 93
 
 static int exec_user_program(const char *filename) {
     int filesize = 0;
@@ -1048,11 +1439,10 @@ static int exec_user_program(const char *filename) {
     asm volatile("csrr %0, sstatus" : "=r"(sstatus));
     sstatus &= ~SSTATUS_SPP;
     sstatus |= SSTATUS_SPIE;
-
+    
     user_mode_running = 1;
-    user_ecall_count = 0;
-    user_ecall_limit = 5;
     user_return_addr = (unsigned long)&&user_return;
+    user_kernel_sp = kernel_sp;
 
     asm volatile(
         "csrw sepc, %0\n"
@@ -1070,7 +1460,7 @@ static int exec_user_program(const char *filename) {
 user_return:
     user_mode_running = 0;
     user_return_addr = 0;
-    user_ecall_count = 0;
+    user_kernel_sp = 0;
 
     uart_puts("[User] program exited\n");
     free(stack_page);
@@ -1083,46 +1473,53 @@ void do_trap(struct pt_regs *regs) {
     unsigned long scause = regs->scause;
 
     if (scause == SCAUSE_U_ECALL) {
-        uart_puts("=== S-Mode trap ===\n");
-        uart_puts("scause: ");
-        uart_put_uint(regs->scause);
-        uart_puts("\n");
-        uart_puts("sepc: ");
-        uart_hex(regs->sepc);
-        uart_puts("\n");
-        uart_puts("stval: ");
-        uart_put_uint(regs->stval);
-        uart_puts("\n");
+        trap_puts("=== S-Mode trap ===\n");
+        trap_puts("scause: ");
+        trap_put_uint(regs->scause);
+        trap_puts("\n");
+        trap_puts("sepc: ");
+        trap_hex(regs->sepc);
+        trap_puts("\n");
+        trap_puts("stval: ");
+        trap_put_uint(regs->stval);
+        trap_puts("\n");
 
         if (user_mode_running && user_return_addr) {
-            user_ecall_count++;
-            if (user_ecall_count >= user_ecall_limit) {
-                regs->sepc = user_return_addr;
-                regs->sstatus |= SSTATUS_SPP;
-                regs->sstatus |= SSTATUS_SPIE;
-                regs->sp = (unsigned long)regs + sizeof(struct pt_regs);
-            } else {
-                regs->sepc += 4;
-            }
-        } else {
-            regs->sepc += 4;
-        }
+    	    if (regs->a7 == SYS_EXIT) {
+        	regs->sepc = user_return_addr;
+        	regs->sstatus |= SSTATUS_SPP;
+        	regs->sstatus |= SSTATUS_SPIE;
+        	regs->sp = user_kernel_sp;
+    	    } else {
+        
+        	regs->sepc += 4;
+    	    }
+	} else {
+    		regs->sepc += 4;
+	}
     } else if (scause == SCAUSE_S_TIMER) {
-        handle_timer_interrupt();
-    } else if (scause == SCAUSE_S_EXT) {
-        int irq = plic_claim();
-        if (irq == uart_irq_id)
-            handle_uart_interrupt();
-        if (irq)
-            plic_complete(irq);
-    } else {
-        uart_puts("Unexpected trap. sepc: ");
-        uart_hex(regs->sepc);
-        uart_puts(", scause: ");
-        uart_hex(regs->scause);
-        uart_puts(", stval: ");
-        uart_hex(regs->stval);
-        uart_puts("\n");
+		handle_timer_interrupt();
+	} else if (scause == SCAUSE_S_EXT) {
+		ext_irq_count++;
+
+		int irq = plic_claim();
+		last_irq = irq;
+
+		if (irq == uart_irq_id) {
+		    uart_irq_count++;
+		    handle_uart_interrupt();
+		}
+
+		if (irq)
+		    plic_complete(irq);
+	} else {
+        trap_puts("Unexpected trap. sepc: ");
+        trap_hex(regs->sepc);
+        trap_puts(", scause: ");
+        trap_hex(regs->scause);
+        trap_puts(", stval: ");
+        trap_hex(regs->stval);
+        trap_puts("\n");
         while (1) {}
     }
 
@@ -1139,20 +1536,35 @@ static unsigned int uart_get_u32_polling(void) {
     return x;
 }
 
-static void boot_loaded_kernel(void) {
+static void boot_loaded_kernel(const void *fdt) {
     void (*kernel_entry)(unsigned long hartid, const void *fdt);
     kernel_entry = (void (*)(unsigned long, const void *))LOAD_ADDR;
     asm volatile("fence.i" ::: "memory");
-    kernel_entry(0, boot_fdt);
+    kernel_entry(0, fdt);
 }
 
 static void shell_load(void) {
+    int old_timer_log = timer_boot_log_enabled;
+
+    timer_boot_log_enabled = 0;
+
+    uart_interrupt_disable();
+
+    ring_clear(&rx_ring);
+    ring_clear(&tx_ring);
+
+    async_console_enabled = 0;
+
     uart_puts("Waiting for kernel image...\n");
 
     unsigned int magic = uart_get_u32_polling();
 
     if (magic != BOOT_MAGIC) {
         uart_puts("Bad magic.\n");
+
+        async_console_enabled = 1;
+        uart_interrupt_enable();
+        timer_boot_log_enabled = old_timer_log;
         return;
     }
 
@@ -1160,21 +1572,63 @@ static void shell_load(void) {
 
     uart_puts("Receiving kernel...\n");
 
+    unsigned char *dst = (unsigned char *)LOAD_ADDR;
     for (unsigned int i = 0; i < size; i++) {
-        LOAD_ADDR[i] = uart_getb();
+		dst[i] = uart_getb();
+	}
+
+    uart_puts("Waiting for cpio archive...\n");
+
+    magic = uart_get_u32_polling();
+    if (magic != BOOT_MAGIC) {
+        uart_puts("Bad cpio magic.\n");
+        async_console_enabled = 1;
+        uart_interrupt_enable();
+        timer_boot_log_enabled = old_timer_log;
+        return;
     }
 
-    asm volatile("fence.i" ::: "memory");
+    unsigned int cpio_size = uart_get_u32_polling();
+    uart_puts("Receiving cpio...\n");
+
+    unsigned char *cpio_dst = (unsigned char *)CPIO_LOAD_ADDR;
+    for (unsigned int i = 0; i < cpio_size; i++)
+        cpio_dst[i] = uart_getb();
+
+    void *new_fdt = make_writable_fdt_copy(boot_fdt);
+    if (!new_fdt) {
+        async_console_enabled = 1;
+        uart_interrupt_enable();
+        timer_boot_log_enabled = old_timer_log;
+        return;
+    }
+
+    update_initrd_in_fdt(new_fdt,
+                         (unsigned long)CPIO_LOAD_ADDR,
+                         (unsigned long)CPIO_LOAD_ADDR + cpio_size);
+
+    uart_puts("new fdt = ");
+    uart_hex((unsigned long)new_fdt);
+    uart_puts("\n");
+    uart_puts("new initrd start = ");
+    uart_hex((unsigned long)CPIO_LOAD_ADDR);
+    uart_puts("\n");
+    uart_puts("new initrd end   = ");
+    uart_hex((unsigned long)CPIO_LOAD_ADDR + cpio_size);
+    uart_puts("\n");
 
     uart_puts("Booting loaded kernel...\n");
-    boot_loaded_kernel();
 
-    while (1) {}
+    local_irq_disable();
+    asm volatile("csrc sie, %0" :: "r"(SIE_STIE | SIE_SEIE) : "memory");
+
+    boot_loaded_kernel(new_fdt);
 }
+
 
 /* ---------- shell ---------- */
 static void print_prompt(void) {
-    uart_puts("opi-rv2> ");
+    console_puts_async("opi-rv2> ");
 }
 
 static int parse_uint(const char **p) {
@@ -1190,39 +1644,42 @@ static int parse_uint(const char **p) {
 
 static void test_task_cb(void *arg) {
     char *s = (char *)arg;
-    uart_puts("[Task] Executing Priority ");
-    uart_puts(s);
-    uart_puts("\n");
+    console_puts_async("[Task] Executing Priority ");
+    console_puts_async(s);
+    console_puts_async("\n");
 }
 
 static void shell_help(void) {
-    uart_puts("Available commands:\n");
-    uart_puts("    help        - show all commands.\n");
-    uart_puts("    hello       - print Hello world.\n");
-    uart_puts("    info        - print system info.\n");
-    uart_puts("    load        - load a kernel over UART.\n");
-    uart_puts("    ls          - list files.\n");
-    uart_puts("    cat         - show file content.\n");
-    uart_puts("    memtest     - run memory allocator test.\n");
-    uart_puts("    exec        - execute a user program.\n");
-    uart_puts("    settimeout  - show text after X sec.\n");
-    uart_puts("    tasktest    - test priority task queue.\n");
+    console_puts_async("Available commands:\n");
+    console_puts_async("    help        - show all commands.\n");
+    console_puts_async("    hello       - print Hello world.\n");
+    console_puts_async("    info        - print system info.\n");
+    console_puts_async("    load        - load a kernel and cpio over UART.\n");
+    console_puts_async("    ls          - list files.\n");
+    console_puts_async("    cat         - show file content.\n");
+    console_puts_async("    memtest     - run memory allocator test.\n");
+    console_puts_async("    exec        - execute a user program.\n");
+    console_puts_async("    settimeout  - show text after X sec.\n");
+    console_puts_async("    tasktest    - test priority task queue.\n");
 }
 
 static void shell_info(void) {
-    uart_puts("System information:\n");
-    uart_puts("    OpenSBI specification version: ");
-    uart_hex(sbi_get_spec_version());
-    uart_puts("\n");
-    uart_puts("    implementation ID: ");
-    uart_hex(sbi_get_impl_id());
-    uart_puts("\n");
-    uart_puts("    implementation version: ");
-    uart_hex(sbi_get_impl_version());
-    uart_puts("\n");
-    uart_puts("    timebase-frequency: ");
-    uart_put_uint(timebase_frequency);
-    uart_puts("\n");
+    console_puts_async("System information:\n");
+    console_puts_async("    OpenSBI specification version: ");
+    console_hex_async(sbi_get_spec_version());
+    console_puts_async("\n");
+
+    console_puts_async("    implementation ID: ");
+    console_hex_async(sbi_get_impl_id());
+    console_puts_async("\n");
+
+    console_puts_async("    implementation version: ");
+    console_hex_async(sbi_get_impl_version());
+    console_puts_async("\n");
+
+    console_puts_async("    timebase-frequency: ");
+    console_put_uint_async(timebase_frequency);
+    console_puts_async("\n");
 }
 
 static void shell_set_timeout(const char *cmd) {
@@ -1236,7 +1693,7 @@ static void shell_set_timeout(const char *cmd) {
         p++;
 
     if (*p == '\0') {
-        uart_puts("Usage: settimeout SECONDS MESSAGE\n");
+        console_puts_async("Usage: settimeout SECONDS MESSAGE\n");
         return;
     }
 
@@ -1251,14 +1708,14 @@ static void shell_set_timeout(const char *cmd) {
         }
     }
 
-    uart_puts("settimeout queue full\n");
+    console_puts_async("settimeout queue full\n");
 }
 
 static void shell_execute(const char *cmd) {
     if (strcmp_simple(cmd, "help")) {
         shell_help();
     } else if (strcmp_simple(cmd, "hello")) {
-        uart_puts("Hello world.\n");
+        console_puts_async("Hello world.\n");
     } else if (strcmp_simple(cmd, "info")) {
         shell_info();
     } else if (strcmp_simple(cmd, "load")) {
@@ -1267,12 +1724,12 @@ static void shell_execute(const char *cmd) {
         if (initrd_start)
             initrd_list(initrd_start);
         else
-            uart_puts("initrd not found\n");
+            console_puts_async("initrd not found\n");
     } else if (strncmp_simple(cmd, "cat ", 4) == 0) {
         if (initrd_start)
             initrd_cat(initrd_start, cmd + 4);
         else
-            uart_puts("initrd not found\n");
+            console_puts_async("initrd not found\n");
     } else if (strcmp_simple(cmd, "memtest")) {
         test_alloc_1();
     } else if (strcmp_simple(cmd, "exec")) {
@@ -1288,9 +1745,9 @@ static void shell_execute(const char *cmd) {
         add_task(test_task_cb, "2", 2);
         run_tasks();
     } else if (cmd[0] != '\0') {
-        uart_puts("Unknown command: ");
-        uart_puts(cmd);
-        uart_puts("\nUse help to get commands.\n");
+        console_puts_async("Unknown command: ");
+		console_puts_async(cmd);
+		console_puts_async("\nUse help to get commands.\n");
     }
 }
 
@@ -1303,8 +1760,15 @@ static void relocate_self(const void *fdt) {
     for (unsigned long i = 0; i < size; i++)
         dst[i] = src[i];
 
-    unsigned long new_sp = RELOC_ADDR + ((unsigned long)_end - (unsigned long)_start);
-    asm volatile("mv sp, %0" :: "r"(new_sp) : "memory");
+    unsigned long kernel_size =
+    (unsigned long)_end - (unsigned long)_start;
+
+	unsigned long new_sp =
+		RELOC_ADDR + kernel_size + KERNEL_STACK_SIZE;
+
+	new_sp &= ~0xFUL;
+
+	asm volatile("mv sp, %0" :: "r"(new_sp) : "memory");
 
     void (*entry)(const void *) =
         (void (*)(const void *))(RELOC_ADDR + ((unsigned long)start_kernel - (unsigned long)_start));
@@ -1314,6 +1778,23 @@ static void relocate_self(const void *fdt) {
 }
 
 /* ---------- kernel entry ---------- */
+static void debug_putc_timeout(char c) {
+    unsigned long timeout = 100000;
+
+    while (!(uart_read_reg(UART_LSR) & UART_LSR_THRE)) {
+        if (--timeout == 0)
+            return;
+    }
+
+    uart_write_reg(UART_THR, (unsigned char)c);
+}
+
+static void delay_loop(unsigned long n) {
+    while (n--) {
+        asm volatile("nop");
+    }
+}
+
 void start_kernel(const void *fdt) {
     /*
      * Important for hot-loaded kernel:
@@ -1338,48 +1819,54 @@ void start_kernel(const void *fdt) {
 
     uart_puts("\nStarting kernel ...\n");
 
+    uart_puts("fdt ptr = ");
+    uart_hex((unsigned long)fdt);
+    uart_puts("\n");
+
     uart_init_from_dtb(fdt);
     initrd_init_from_dtb(fdt);
-    timer_frequency_init_from_dtb(fdt);
-
     mm_init_advanced(fdt, (unsigned long)initrd_start, (unsigned long)initrd_end);
+    uart_puts("memory allocator ready\n");
+    timer_frequency_init_from_dtb(fdt);
+    plic_init_from_dtb(fdt);
 
     plic_init();
     uart_interrupt_init();
     timer_init();
 
-    uart_puts("Type help to get commands.\n\n");
-    print_prompt();
+	enable_timer_interrupt();
+	enable_external_interrupt();
+	local_irq_enable();
 
-    /*
-     * Now allow timer interrupt to print "boot time: 0"
-     * after the prompt.
-     */
-    enable_timer_interrupt();
-    enable_external_interrupt();
-    local_irq_enable();
-    
-    while (1) {
-   	 char c = console_getc();
+	async_console_enabled = 1;
+	
+	console_puts_async("\nType help to get commands.\n\n");
+	console_puts_async("opi-rv2> ");
+	
+	add_task(boot_time_task, (void *)0, 2);
+	timer_boot_log_enabled = 1;	
 
-    	if (c == '\r' || c == '\n') {
-   	     uart_putc('\n');
-   	     buf[idx] = '\0';
+	while (1) {
+		char c = console_getc();
 
-  	      shell_execute(buf);
+		if (c == '\r' || c == '\n') {
+		    console_putc_async('\n');
+		    buf[idx] = '\0';
 
- 	       idx = 0;
- 	       uart_puts("\nopi-rv2> ");
- 	 } else if (c == 127 || c == '\b') {
- 	       if (idx > 0) {
-   	         idx--;
-  	          uart_puts("\b \b");
-   	       }
-   	 } else {
-   	     if (idx < (int)sizeof(buf) - 1) {
-   	         buf[idx++] = c;
-  	          uart_putc(c);
- 	     }
- 	 }
-    }
+		    shell_execute(buf);
+
+		    idx = 0;
+		    console_puts_async("\nopi-rv2> ");
+		} else if (c == 127 || c == '\b') {
+		    if (idx > 0) {
+		        idx--;
+		        console_puts_async("\b \b");
+		    }
+		} else {
+		    if (idx < (int)sizeof(buf) - 1) {
+		        buf[idx++] = c;
+		        console_putc_async(c);
+		    }
+		}
+	}
 }

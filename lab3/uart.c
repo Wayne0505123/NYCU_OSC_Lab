@@ -1,3 +1,4 @@
+/* Orange Pi RV2 UART0: serial@d4017000, reg-shift=2, reg-io-width=4. */
 unsigned long uart_base_addr = 0xD4017000UL;
 int uart_reg_shift = 2;
 int uart_reg_io_width = 4;
@@ -20,14 +21,13 @@ void uart_set_config(int reg_shift, int reg_io_width) {
     uart_reg_io_width = reg_io_width;
 }
 
-static unsigned int uart_read_reg(int off) {
+unsigned int uart_read_reg(int off) {
     if (uart_reg_io_width == 4)
         return *(volatile unsigned int *)UART_REG(off);
-
     return *(volatile unsigned char *)UART_REG(off);
 }
 
-static void uart_write_reg(int off, unsigned int val) {
+void uart_write_reg(int off, unsigned int val) {
     if (uart_reg_io_width == 4)
         *(volatile unsigned int *)UART_REG(off) = val;
     else
@@ -59,7 +59,6 @@ void uart_puts(const char *s) {
 
 void uart_hex(unsigned long h) {
     uart_puts("0x");
-
     for (int c = 60; c >= 0; c -= 4) {
         unsigned long n = (h >> c) & 0xf;
         uart_putc((char)(n < 10 ? '0' + n : 'a' + n - 10));
@@ -85,15 +84,22 @@ void uart_put_uint(unsigned int x) {
 }
 
 void uart_putb(unsigned char c) {
-    while ((uart_read_reg(UART_LSR) & LSR_TDRQ) == 0)
-        ;
-
-    uart_write_reg(UART_THR, (unsigned int)c);
+    uart_putc((char)c);
 }
 
 unsigned char uart_getb(void) {
+    return (unsigned char)uart_getc();
+}
+
+/* Binary-safe helpers used by the load command. */
+unsigned char uart_getb_raw(void) {
     while ((uart_read_reg(UART_LSR) & LSR_DR) == 0)
         ;
-
     return (unsigned char)(uart_read_reg(UART_RBR) & 0xff);
+}
+
+void uart_putb_raw(unsigned char c) {
+    while ((uart_read_reg(UART_LSR) & LSR_TDRQ) == 0)
+        ;
+    uart_write_reg(UART_THR, (unsigned int)c);
 }

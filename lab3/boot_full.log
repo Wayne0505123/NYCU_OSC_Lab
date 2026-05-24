@@ -30,158 +30,158 @@ bm:3
 j...
 
 U-Boot SPL 2022.10ky-g89bff4a7e4 (Sep 22 2025 - 11:26:39 +0800)
-[   0.306] DDR type LPDDR4X
-[   0.325] lpddr4_silicon_init consume 19ms
-[   0.326] Change DDR data rate to 2400MT/s
+[   0.309] DDR type LPDDR4X
+[   0.328] lpddr4_silicon_init consume 18ms
+[   0.329] Change DDR data rate to 2400MT/s
 spl: partition error
 mmc_load_image_raw_sector: mmc block read error
-[   1.072] Boot from fit configuration x1_orangepi-rv2
-[   1.074] ## Checking hash(es) for config conf_14 ... OK
-[   1.079] ## Checking hash(es) for Image opensbi ... OK
-[   1.084] ## Checking hash(es) for Image uboot ... OK
-[   1.090] ## Checking hash(es) for Image fdt_14 ... OK
-[   1.135] 
+[   1.076] Boot from fit configuration x1_orangepi-rv2
+[   1.077] ## Checking hash(es) for config conf_14 ... OK
+[   1.083] ## Checking hash(es) for Image opensbi ... OK
+[   1.088] ## Checking hash(es) for Image uboot ... OK
+[   1.093] ## Checking hash(es) for Image fdt_14 ... OK
+[   1.139] 
 
 U-Boot 2022.10ky-g89bff4a7e4 (Sep 22 2025 - 11:26:39 +0800)
 
-[   1.139] CPU:   rv64imafdcv
-[   1.142] Model: ky x1 orangepi-rv2 board
-[   1.146] DRAM:  DDR size = 8192 MB
-[   1.149] DDR size = 8192 MB
+[   1.142] CPU:   rv64imafdcv
+[   1.145] Model: ky x1 orangepi-rv2 board
+[   1.149] DRAM:  DDR size = 8192 MB
 [   1.152] DDR size = 8192 MB
-[   1.154] 8 GiB
-[   1.229] reset driver probe start 
-[   1.231] reset driver probe finish 
-[   1.239] DCDC_REG1@dcdc1: enabling
-[   1.241] DCDC_REG3@dcdc3: enabling
-[   1.246] LDO_REG1@ldo1: enabling
-[   1.250] SWITCH_REG1@switch1: enabling
-[   1.251] SWITCH_REG2@pwr-event: enabling
-[   1.255] SWITCH_REG3@pwr-int: enabling
-[   1.258] SWITCH_REG4@rtc-ctrl: enabling
-[   1.262] SWITCH_REG5@rtc-event: enabling
-[   1.266] SWITCH_REG6@rtc-irq: enabling
-[   1.270] SWITCH_REG7@power-down: enabling
-[   1.273] SWITCH_REG8@reboot-flag: enabling
-[   1.279] vcc5v-otg-regulator@vcc5v_otg: set 5000000 uV; enabling
-[   1.284] vcc3v3-pcie-regulator@vcc3v3_pcie: set 3300000 uV; enabling
-[   1.290] DDR size = 8192 MB
-[   1.295] Core:  417 devices, 30 uclasses, devicetree: board
-[   1.308] WDT:   Started PMIC_WDT with servicing (60s timeout)
-[   1.313] WDT:   Started watchdog@D4080000 with servicing (60s timeout)
-[   1.322] MMC:   sdh@d4280000: probe done.
-[   1.328] sdh@d4281000: probe done.
-[   1.329] sdh@d4280000: 0, sdh@d4281000: 2
-[   1.333] Loading Environment from MMC... sdh@d4280000: 74 clk wait timeout(100)
-[   1.413] OK
-[   1.422] Now init Rterm...
-[   1.422] pcie prot id = 1, porta_init_done = 0
-[   1.426] Now waiting portA resister tuning done...
-[   1.431] porta redonly_reg2: 00006d58
-[   1.434] pcie_rcal = 0x00006d58
-[   1.437] pcie port id = 1, lane num = 2
-[   1.441] Now int init_puphy...
-[   1.444] waiting pll lock...
-[   1.447] Now finish init_puphy....
-[   1.450] pcie_dw_x1 pcie@ca400000: Unable to get phy0
-[   1.455] pcie_dw_x1 pcie@ca400000: Unable to get phy1
-[   2.561] PCIE-0: Link down
-[   2.582] Error (-1): cannot determine file size
-[   2.583] initialize_console_log_buffer
-[   2.587] Have allocated memory for console log buffer
-[   2.592] In:    serial
-[   2.594] Out:   serial
-[   2.597] Err:   serial
-[   2.600] Default to 100kHz
-[   2.616] EEPROM: TlvInfo v1 len=38
-[   2.616] valid ethaddr: c0:74:2b:f9:15:0c
-[   2.620] Cannot find TLV data: part#
-[   2.623] Cannot find TLV data: serial#
-[   2.627] Cannot find TLV data: manufacture_date
-[   2.631] Cannot find TLV data: manufacturer
-[   2.635] Cannot find TLV data: device_version
-[   2.640] Cannot find TLV data: sdk_version
-[   2.654] Found device 'hdmi@c0400500', disp_uc_priv=000000007deb5a70
-[   2.764] HDMI cannot get HPD signal
-[   2.764] ky_display_init: device 'dpu@c0340000' display won't probe (ret=-1)
-[   2.875] HDMI cannot get HPD signal
-[   2.875] display devices not found or not probed yet: -1
-[   2.880] All buttons probed successfully
-[   2.885] Read PMIC reg ab value f0
-[   2.888] Failed to get fastboot key config: -19
-[   2.892] Net:   RGMII interface
-[   2.895] eth0: ethernet@cac80000
-[   2.900] Autoboot in 0 seconds
-[   2.911] starting USB...
-[   2.911] Bus ehci1@c0980100: ehci_x1_ci ehci1@c0980100: ehci_mv_probe Enter ... 
-[   2.921] mv_usb_phy usbphy1@c09c0000: x1-ci-usb-phy-probe: Enter...
-[   2.926] ehci_x1_ci ehci1@c0980100: ehci-x1-ci: init hccr c0980100 and hcor c0980140 hc_length 64
-[   2.948] USB EHCI 1.00
-[   2.948] Bus dwc3@c0a00000: No USB maximum speed specified. Using super speed
-[   2.961] mv_usb_phy usb2phy@0xc0a30000: x1-ci-usb-phy-probe: Enter...
-[   2.965] x1_combphy phy@c0b10000: USB3 PHY init.
-[   2.969] dwc3-generic-host dwc3@c0a00000: this is a DesignWare USB3 DRD Core
-[   3.386] Register 2000140 NbrPorts 2
+[   1.155] DDR size = 8192 MB
+[   1.158] 8 GiB
+[   1.232] reset driver probe start 
+[   1.234] reset driver probe finish 
+[   1.242] DCDC_REG1@dcdc1: enabling
+[   1.244] DCDC_REG3@dcdc3: enabling
+[   1.250] LDO_REG1@ldo1: enabling
+[   1.254] SWITCH_REG1@switch1: enabling
+[   1.254] SWITCH_REG2@pwr-event: enabling
+[   1.258] SWITCH_REG3@pwr-int: enabling
+[   1.262] SWITCH_REG4@rtc-ctrl: enabling
+[   1.266] SWITCH_REG5@rtc-event: enabling
+[   1.269] SWITCH_REG6@rtc-irq: enabling
+[   1.273] SWITCH_REG7@power-down: enabling
+[   1.277] SWITCH_REG8@reboot-flag: enabling
+[   1.282] vcc5v-otg-regulator@vcc5v_otg: set 5000000 uV; enabling
+[   1.287] vcc3v3-pcie-regulator@vcc3v3_pcie: set 3300000 uV; enabling
+[   1.293] DDR size = 8192 MB
+[   1.299] Core:  417 devices, 30 uclasses, devicetree: board
+[   1.312] WDT:   Started PMIC_WDT with servicing (60s timeout)
+[   1.317] WDT:   Started watchdog@D4080000 with servicing (60s timeout)
+[   1.325] MMC:   sdh@d4280000: probe done.
+[   1.332] sdh@d4281000: probe done.
+[   1.332] sdh@d4280000: 0, sdh@d4281000: 2
+[   1.336] Loading Environment from MMC... sdh@d4280000: 74 clk wait timeout(100)
+[   1.417] OK
+[   1.425] Now init Rterm...
+[   1.425] pcie prot id = 1, porta_init_done = 0
+[   1.429] Now waiting portA resister tuning done...
+[   1.434] porta redonly_reg2: 00006d58
+[   1.438] pcie_rcal = 0x00006d58
+[   1.441] pcie port id = 1, lane num = 2
+[   1.444] Now int init_puphy...
+[   1.447] waiting pll lock...
+[   1.450] Now finish init_puphy....
+[   1.454] pcie_dw_x1 pcie@ca400000: Unable to get phy0
+[   1.458] pcie_dw_x1 pcie@ca400000: Unable to get phy1
+[   2.564] PCIE-0: Link down
+[   2.585] Error (-1): cannot determine file size
+[   2.587] initialize_console_log_buffer
+[   2.590] Have allocated memory for console log buffer
+[   2.595] In:    serial
+[   2.598] Out:   serial
+[   2.600] Err:   serial
+[   2.604] Default to 100kHz
+[   2.619] EEPROM: TlvInfo v1 len=38
+[   2.619] valid ethaddr: c0:74:2b:f9:15:0c
+[   2.623] Cannot find TLV data: part#
+[   2.627] Cannot find TLV data: serial#
+[   2.630] Cannot find TLV data: manufacture_date
+[   2.635] Cannot find TLV data: manufacturer
+[   2.639] Cannot find TLV data: device_version
+[   2.643] Cannot find TLV data: sdk_version
+[   2.657] Found device 'hdmi@c0400500', disp_uc_priv=000000007deb5a70
+[   2.768] HDMI cannot get HPD signal
+[   2.768] ky_display_init: device 'dpu@c0340000' display won't probe (ret=-1)
+[   2.879] HDMI cannot get HPD signal
+[   2.879] display devices not found or not probed yet: -1
+[   2.884] All buttons probed successfully
+[   2.889] Read PMIC reg ab value f0
+[   2.892] Failed to get fastboot key config: -19
+[   2.896] Net:   RGMII interface
+[   2.899] eth0: ethernet@cac80000
+[   2.904] Autoboot in 0 seconds
+[   2.915] starting USB...
+[   2.915] Bus ehci1@c0980100: ehci_x1_ci ehci1@c0980100: ehci_mv_probe Enter ... 
+[   2.925] mv_usb_phy usbphy1@c09c0000: x1-ci-usb-phy-probe: Enter...
+[   2.930] ehci_x1_ci ehci1@c0980100: ehci-x1-ci: init hccr c0980100 and hcor c0980140 hc_length 64
+[   2.952] USB EHCI 1.00
+[   2.952] Bus dwc3@c0a00000: No USB maximum speed specified. Using super speed
+[   2.965] mv_usb_phy usb2phy@0xc0a30000: x1-ci-usb-phy-probe: Enter...
+[   2.969] x1_combphy phy@c0b10000: USB3 PHY init.
+[   2.973] dwc3-generic-host dwc3@c0a00000: this is a DesignWare USB3 DRD Core
+[   3.390] Register 2000140 NbrPorts 2
 Starting the controller
-[   3.389] USB XHCI 1.10
-[   3.391] scanning bus ehci1@c0980100 for devices... 1 USB Device(s) found
-[   4.530] scanning bus dwc3@c0a00000 for devices... 3 USB Device(s) found
-[   6.057]        scanning usb for storage devices... 0 Storage Device(s) found
-[   6.061] 
+[   3.393] USB XHCI 1.10
+[   3.395] scanning bus ehci1@c0980100 for devices... 1 USB Device(s) found
+[   4.534] scanning bus dwc3@c0a00000 for devices... 3 USB Device(s) found
+[   6.061]        scanning usb for storage devices... 0 Storage Device(s) found
+[   6.066] 
 Device 0: unknown device
-[   6.117] switch to partitions #0, OK
-[   6.117] mmc0 is current device
-[   6.135] Scanning mmc 0:1...
-[   6.186] Found U-Boot script /boot.scr
-[   6.206] 124 bytes read in 7 ms (16.6 KiB/s)
-[   6.207] ## Executing script at 2c100000
-[   6.246] 124967 bytes read in 21 ms (5.7 MiB/s)
-[   6.248] ## Loading kernel from FIT Image at 11000000 ...
-[   6.253]    Using 'config-1' configuration
-[   6.257]    Verifying Hash Integrity ... OK
-[   6.261]    Trying 'kernel' kernel subimage
-[   6.265]      Description:  Kernel Image
-[   6.269]      Type:         Kernel Image
-[   6.273]      Compression:  uncompressed
-[   6.277]      Data Start:   0x110000d0
-[   6.281]      Data Size:    8208 Bytes = 8 KiB
-[   6.285]      Architecture: RISC-V
-[   6.288]      OS:           Linux
-[   6.291]      Load Address: 0x00200000
-[   6.295]      Entry Point:  0x00200000
-[   6.299]    Verifying Hash Integrity ... OK
-[   6.303] ## Loading ramdisk from FIT Image at 11000000 ...
-[   6.308]    Using 'config-1' configuration
-[   6.312]    Verifying Hash Integrity ... OK
-[   6.316]    Trying 'ramdisk' ramdisk subimage
-[   6.320]      Description:  Initial Ramdisk
-[   6.325]      Type:         RAMDisk Image
-[   6.328]      Compression:  uncompressed
-[   6.332]      Data Start:   0x1101dac4
-[   6.336]      Data Size:    2048 Bytes = 2 KiB
-[   6.340]      Architecture: RISC-V
-[   6.344]      OS:           Linux
-[   6.347]      Load Address: 0x46100000
-[   6.350]      Entry Point:  unavailable
-[   6.354]    Verifying Hash Integrity ... OK
-[   6.358]    Loading ramdisk from 0x1101dac4 to 0x46100000
-[   6.364] ## Loading fdt from FIT Image at 11000000 ...
-[   6.369]    Using 'config-1' configuration
-[   6.373]    Verifying Hash Integrity ... OK
-[   6.377]    Trying 'fdt' fdt subimage
-[   6.380]      Description:  Flat Device Tree
-[   6.384]      Type:         Flat Device Tree
-[   6.389]      Compression:  uncompressed
-[   6.392]      Data Start:   0x11002190
-[   6.396]      Data Size:    112811 Bytes = 110.2 KiB
-[   6.401]      Architecture: RISC-V
-[   6.404]      Load Address: 0x31000000
-[   6.408]    Verifying Hash Integrity ... OK
-[   6.412]    Loading fdt from 0x11002190 to 0x31000000
-[   6.417]    Booting using the fdt blob at 0x31000000
-[   6.522]    Loading Kernel Image
-[   6.523]    Loading Ramdisk to 7dd8f000, end 7dd8f800 ... OK
-[   6.535]    Loading Device Tree to 000000007dd70000, end 000000007dd8e8aa ... OK
+[   6.121] switch to partitions #0, OK
+[   6.121] mmc0 is current device
+[   6.139] Scanning mmc 0:1...
+[   6.190] Found U-Boot script /boot.scr
+[   6.210] 124 bytes read in 7 ms (16.6 KiB/s)
+[   6.212] ## Executing script at 2c100000
+[   6.251] 126879 bytes read in 21 ms (5.8 MiB/s)
+[   6.252] ## Loading kernel from FIT Image at 11000000 ...
+[   6.258]    Using 'config-1' configuration
+[   6.262]    Verifying Hash Integrity ... OK
+[   6.266]    Trying 'kernel' kernel subimage
+[   6.270]      Description:  Kernel Image
+[   6.274]      Type:         Kernel Image
+[   6.278]      Compression:  uncompressed
+[   6.281]      Data Start:   0x110000d0
+[   6.285]      Data Size:    10120 Bytes = 9.9 KiB
+[   6.290]      Architecture: RISC-V
+[   6.293]      OS:           Linux
+[   6.296]      Load Address: 0x00200000
+[   6.300]      Entry Point:  0x00200000
+[   6.303]    Verifying Hash Integrity ... OK
+[   6.308] ## Loading ramdisk from FIT Image at 11000000 ...
+[   6.313]    Using 'config-1' configuration
+[   6.317]    Verifying Hash Integrity ... OK
+[   6.321]    Trying 'ramdisk' ramdisk subimage
+[   6.325]      Description:  Initial Ramdisk
+[   6.329]      Type:         RAMDisk Image
+[   6.333]      Compression:  uncompressed
+[   6.337]      Data Start:   0x1101e23c
+[   6.341]      Data Size:    2048 Bytes = 2 KiB
+[   6.345]      Architecture: RISC-V
+[   6.348]      OS:           Linux
+[   6.351]      Load Address: 0x46100000
+[   6.355]      Entry Point:  unavailable
+[   6.359]    Verifying Hash Integrity ... OK
+[   6.363]    Loading ramdisk from 0x1101e23c to 0x46100000
+[   6.368] ## Loading fdt from FIT Image at 11000000 ...
+[   6.373]    Using 'config-1' configuration
+[   6.377]    Verifying Hash Integrity ... OK
+[   6.382]    Trying 'fdt' fdt subimage
+[   6.385]      Description:  Flat Device Tree
+[   6.389]      Type:         Flat Device Tree
+[   6.393]      Compression:  uncompressed
+[   6.397]      Data Start:   0x11002908
+[   6.401]      Data Size:    112811 Bytes = 110.2 KiB
+[   6.406]      Architecture: RISC-V
+[   6.409]      Load Address: 0x31000000
+[   6.413]    Verifying Hash Integrity ... OK
+[   6.417]    Loading fdt from 0x11002908 to 0x31000000
+[   6.422]    Booting using the fdt blob at 0x31000000
+[   6.527]    Loading Kernel Image
+[   6.528]    Loading Ramdisk to 7dd8f000, end 7dd8f800 ... OK
+[   6.540]    Loading Device Tree to 000000007dd70000, end 000000007dd8e8aa ... OK
 
 Starting kernel ...
 
@@ -199,21 +199,26 @@ Starting kernel ...
 Bootloader> load
 Waiting for kernel image...
 Receiving kernel...
+Waiting for cpio archive...
+Receiving cpio...
+new fdt = 0x0000000003f00000
+new initrd start = 0x0000000003000000
+new initrd end   = 0x0000000003000800
 Booting loaded kernel...
 
 Relocating kernel...
-Relocated kernel running.
 
-fdt ptr = 0x000000007dd70000
+Starting kernel ...
+fdt ptr = 0x0000000003f00000
 uart base from dtb = 0x00000000d4017000
 uart reg shift = 0x0000000000000002
 uart reg width = 0x0000000000000004
-initrd start = 0x000000007dd8f000
-initrd end   = 0x000000007dd8f800
+initrd start = 0x0000000003000000
+initrd end   = 0x0000000003000800
 [MM] memory base = 0x0000000000000000
 [MM] memory size = 0x0000000080000000
 [MM] num pages = 524288
-[Reserve] Add reserved range [0x000000007dd70000, 0x000000007dd8d000)
+[Reserve] Add reserved range [0x0000000003f00000, 0x0000000004000000)
 [Reserve] Add reserved range [0x000000007dd8f000, 0x000000007dd90000)
 [Reserve] Add reserved range [0x000000007f000000, 0x0000000080000000)
 [Reserve] Add reserved range [0x0000000000000000, 0x0000000000080000)
@@ -226,367 +231,691 @@ initrd end   = 0x000000007dd8f800
 [Reserve] Add reserved range [0x0000000030300000, 0x0000000030340000)
 [Reserve] Add reserved range [0x0000000030340000, 0x0000000030380000)
 [Reserve] Add reserved range [0x000000002ff40000, 0x0000000030000000)
-[Reserve] Add reserved range [0x0000000020000000, 0x0000000020009000)
-[Reserve] Add reserved range [0x000000007dd8f000, 0x000000007dd90000)
-[Reserve] Add reserved range [0x0000000020009000, 0x0000000020c09000)
-[Startup] Allocate 0x0000000020009000 size 0x0000000000c00000
-[Reserve] Add reserved range [0x0000000020c09000, 0x0000000021809000)
-[Startup] Allocate 0x0000000020c09000 size 0x0000000000c00000
-[Reserve] Reserve address [0x000000007dd70000, 0x000000007dd8d000). Range of pages: [515440, 515469)
-[-] Remove page 515072 from order 10. Range of pages: [515072, 516095]
-[+] Add page 515072 to order 9. Range of pages: [515072, 515583]
-[+] Add page 515584 to order 9. Range of pages: [515584, 516095]
-[-] Remove page 515072 from order 9. Range of pages: [515072, 515583]
-[+] Add page 515072 to order 8. Range of pages: [515072, 515327]
-[+] Add page 515328 to order 8. Range of pages: [515328, 515583]
-[-] Remove page 515328 from order 8. Range of pages: [515328, 515583]
-[+] Add page 515328 to order 7. Range of pages: [515328, 515455]
-[+] Add page 515456 to order 7. Range of pages: [515456, 515583]
-[-] Remove page 515456 from order 7. Range of pages: [515456, 515583]
-[+] Add page 515456 to order 6. Range of pages: [515456, 515519]
-[+] Add page 515520 to order 6. Range of pages: [515520, 515583]
-[-] Remove page 515328 from order 7. Range of pages: [515328, 515455]
-[+] Add page 515328 to order 6. Range of pages: [515328, 515391]
-[+] Add page 515392 to order 6. Range of pages: [515392, 515455]
-[-] Remove page 515392 from order 6. Range of pages: [515392, 515455]
-[+] Add page 515392 to order 5. Range of pages: [515392, 515423]
-[+] Add page 515424 to order 5. Range of pages: [515424, 515455]
-[-] Remove page 515456 from order 6. Range of pages: [515456, 515519]
-[+] Add page 515456 to order 5. Range of pages: [515456, 515487]
-[+] Add page 515488 to order 5. Range of pages: [515488, 515519]
-[-] Remove page 515456 from order 5. Range of pages: [515456, 515487]
-[+] Add page 515456 to order 4. Range of pages: [515456, 515471]
-[+] Add page 515472 to order 4. Range of pages: [515472, 515487]
-[-] Remove page 515424 from order 5. Range of pages: [515424, 515455]
-[+] Add page 515424 to order 4. Range of pages: [515424, 515439]
-[+] Add page 515440 to order 4. Range of pages: [515440, 515455]
-[-] Remove page 515440 from order 4. Range of pages: [515440, 515455]
-[-] Remove page 515456 from order 4. Range of pages: [515456, 515471]
-[+] Add page 515456 to order 3. Range of pages: [515456, 515463]
-[+] Add page 515464 to order 3. Range of pages: [515464, 515471]
-[-] Remove page 515464 from order 3. Range of pages: [515464, 515471]
-[+] Add page 515464 to order 2. Range of pages: [515464, 515467]
-[+] Add page 515468 to order 2. Range of pages: [515468, 515471]
-[-] Remove page 515456 from order 3. Range of pages: [515456, 515463]
-[-] Remove page 515468 from order 2. Range of pages: [515468, 515471]
-[+] Add page 515468 to order 1. Range of pages: [515468, 515469]
-[+] Add page 515470 to order 1. Range of pages: [515470, 515471]
-[-] Remove page 515464 from order 2. Range of pages: [515464, 515467]
-[-] Remove page 515468 from order 1. Range of pages: [515468, 515469]
-[+] Add page 515468 to order 0. Range of pages: [515468, 515468]
-[+] Add page 515469 to order 0. Range of pages: [515469, 515469]
-[-] Remove page 515468 from order 0. Range of pages: [515468, 515468]
-[Reserve] Reserve address [0x000000007dd8f000, 0x000000007dd90000). Range of pages: [515471, 515472)
-[-] Remove page 515470 from order 1. Range of pages: [515470, 515471]
-[+] Add page 515470 to order 0. Range of pages: [515470, 515470]
-[+] Add page 515471 to order 0. Range of pages: [515471, 515471]
-[-] Remove page 515471 from order 0. Range of pages: [515471, 515471]
-[Reserve] Reserve address [0x000000007f000000, 0x0000000080000000). Range of pages: [520192, 524288)
-[-] Remove page 523264 from order 10. Range of pages: [523264, 524287]
-[-] Remove page 522240 from order 10. Range of pages: [522240, 523263]
-[-] Remove page 521216 from order 10. Range of pages: [521216, 522239]
-[-] Remove page 520192 from order 10. Range of pages: [520192, 521215]
-[Reserve] Reserve address [0x0000000000000000, 0x0000000000080000). Range of pages: [0, 128)
-[-] Remove page 0 from order 10. Range of pages: [0, 1023]
-[+] Add page 0 to order 9. Range of pages: [0, 511]
-[+] Add page 512 to order 9. Range of pages: [512, 1023]
-[-] Remove page 0 from order 9. Range of pages: [0, 511]
-[+] Add page 0 to order 8. Range of pages: [0, 255]
-[+] Add page 256 to order 8. Range of pages: [256, 511]
-[-] Remove page 0 from order 8. Range of pages: [0, 255]
-[+] Add page 0 to order 7. Range of pages: [0, 127]
+[Reserve] Add reserved range [0x0000000020000000, 0x000000002000a000)
+[Reserve] Add reserved range [0x0000000020009000, 0x000000002002a000)
+[Reserve] Add reserved range [0x0000000003000000, 0x0000000003001000)
+[Reserve] Add reserved range [0x000000002002a000, 0x0000000020c2a000)
+[Startup] Allocate 0x000000002002a000 size 0x0000000000c00000
+[Reserve] Add reserved range [0x0000000020c2a000, 0x000000002182a000)
+[Startup] Allocate 0x0000000020c2a000 size 0x0000000000c00000
 [+] Add page 128 to order 7. Range of pages: [128, 255]
-[-] Remove page 0 from order 7. Range of pages: [0, 127]
-[Reserve] Reserve address [0x0000000030000000, 0x0000000030200000). Range of pages: [196608, 197120)
-[-] Remove page 196608 from order 10. Range of pages: [196608, 197631]
-[+] Add page 196608 to order 9. Range of pages: [196608, 197119]
-[+] Add page 197120 to order 9. Range of pages: [197120, 197631]
-[-] Remove page 196608 from order 9. Range of pages: [196608, 197119]
-[Reserve] Reserve address [0x0000000030200000, 0x0000000030203000). Range of pages: [197120, 197123)
-[-] Remove page 197120 from order 9. Range of pages: [197120, 197631]
-[+] Add page 197120 to order 8. Range of pages: [197120, 197375]
-[+] Add page 197376 to order 8. Range of pages: [197376, 197631]
-[-] Remove page 197120 from order 8. Range of pages: [197120, 197375]
-[+] Add page 197120 to order 7. Range of pages: [197120, 197247]
-[+] Add page 197248 to order 7. Range of pages: [197248, 197375]
-[-] Remove page 197120 from order 7. Range of pages: [197120, 197247]
-[+] Add page 197120 to order 6. Range of pages: [197120, 197183]
-[+] Add page 197184 to order 6. Range of pages: [197184, 197247]
-[-] Remove page 197120 from order 6. Range of pages: [197120, 197183]
-[+] Add page 197120 to order 5. Range of pages: [197120, 197151]
-[+] Add page 197152 to order 5. Range of pages: [197152, 197183]
-[-] Remove page 197120 from order 5. Range of pages: [197120, 197151]
-[+] Add page 197120 to order 4. Range of pages: [197120, 197135]
-[+] Add page 197136 to order 4. Range of pages: [197136, 197151]
-[-] Remove page 197120 from order 4. Range of pages: [197120, 197135]
-[+] Add page 197120 to order 3. Range of pages: [197120, 197127]
-[+] Add page 197128 to order 3. Range of pages: [197128, 197135]
-[-] Remove page 197120 from order 3. Range of pages: [197120, 197127]
-[+] Add page 197120 to order 2. Range of pages: [197120, 197123]
-[+] Add page 197124 to order 2. Range of pages: [197124, 197127]
-[-] Remove page 197120 from order 2. Range of pages: [197120, 197123]
-[+] Add page 197120 to order 1. Range of pages: [197120, 197121]
-[+] Add page 197122 to order 1. Range of pages: [197122, 197123]
-[-] Remove page 197122 from order 1. Range of pages: [197122, 197123]
-[+] Add page 197122 to order 0. Range of pages: [197122, 197122]
-[+] Add page 197123 to order 0. Range of pages: [197123, 197123]
-[-] Remove page 197120 from order 1. Range of pages: [197120, 197121]
-[-] Remove page 197122 from order 0. Range of pages: [197122, 197122]
-[Reserve] Reserve address [0x0000000030203000, 0x0000000030206000). Range of pages: [197123, 197126)
-[-] Remove page 197124 from order 2. Range of pages: [197124, 197127]
-[+] Add page 197124 to order 1. Range of pages: [197124, 197125]
-[+] Add page 197126 to order 1. Range of pages: [197126, 197127]
-[-] Remove page 197124 from order 1. Range of pages: [197124, 197125]
-[-] Remove page 197123 from order 0. Range of pages: [197123, 197123]
-[Reserve] Reserve address [0x0000000030206000, 0x00000000302fc000). Range of pages: [197126, 197372)
-[-] Remove page 197248 from order 7. Range of pages: [197248, 197375]
-[+] Add page 197248 to order 6. Range of pages: [197248, 197311]
-[+] Add page 197312 to order 6. Range of pages: [197312, 197375]
-[-] Remove page 197312 from order 6. Range of pages: [197312, 197375]
-[+] Add page 197312 to order 5. Range of pages: [197312, 197343]
-[+] Add page 197344 to order 5. Range of pages: [197344, 197375]
-[-] Remove page 197248 from order 6. Range of pages: [197248, 197311]
-[-] Remove page 197184 from order 6. Range of pages: [197184, 197247]
-[-] Remove page 197344 from order 5. Range of pages: [197344, 197375]
-[+] Add page 197344 to order 4. Range of pages: [197344, 197359]
-[+] Add page 197360 to order 4. Range of pages: [197360, 197375]
-[-] Remove page 197312 from order 5. Range of pages: [197312, 197343]
-[-] Remove page 197152 from order 5. Range of pages: [197152, 197183]
-[-] Remove page 197360 from order 4. Range of pages: [197360, 197375]
-[+] Add page 197360 to order 3. Range of pages: [197360, 197367]
-[+] Add page 197368 to order 3. Range of pages: [197368, 197375]
-[-] Remove page 197344 from order 4. Range of pages: [197344, 197359]
-[-] Remove page 197136 from order 4. Range of pages: [197136, 197151]
-[-] Remove page 197368 from order 3. Range of pages: [197368, 197375]
-[+] Add page 197368 to order 2. Range of pages: [197368, 197371]
-[+] Add page 197372 to order 2. Range of pages: [197372, 197375]
-[-] Remove page 197360 from order 3. Range of pages: [197360, 197367]
-[-] Remove page 197128 from order 3. Range of pages: [197128, 197135]
-[-] Remove page 197368 from order 2. Range of pages: [197368, 197371]
-[-] Remove page 197126 from order 1. Range of pages: [197126, 197127]
-[Reserve] Reserve address [0x00000000302fc000, 0x0000000030300000). Range of pages: [197372, 197376)
-[-] Remove page 197372 from order 2. Range of pages: [197372, 197375]
-[Reserve] Reserve address [0x0000000030300000, 0x0000000030340000). Range of pages: [197376, 197440)
-[-] Remove page 197376 from order 8. Range of pages: [197376, 197631]
-[+] Add page 197376 to order 7. Range of pages: [197376, 197503]
-[+] Add page 197504 to order 7. Range of pages: [197504, 197631]
-[-] Remove page 197376 from order 7. Range of pages: [197376, 197503]
-[+] Add page 197376 to order 6. Range of pages: [197376, 197439]
-[+] Add page 197440 to order 6. Range of pages: [197440, 197503]
-[-] Remove page 197376 from order 6. Range of pages: [197376, 197439]
-[Reserve] Reserve address [0x0000000030340000, 0x0000000030380000). Range of pages: [197440, 197504)
-[-] Remove page 197440 from order 6. Range of pages: [197440, 197503]
-[Reserve] Reserve address [0x000000002ff40000, 0x0000000030000000). Range of pages: [196416, 196608)
-[-] Remove page 195584 from order 10. Range of pages: [195584, 196607]
-[+] Add page 195584 to order 9. Range of pages: [195584, 196095]
-[+] Add page 196096 to order 9. Range of pages: [196096, 196607]
-[-] Remove page 196096 from order 9. Range of pages: [196096, 196607]
-[+] Add page 196096 to order 8. Range of pages: [196096, 196351]
-[+] Add page 196352 to order 8. Range of pages: [196352, 196607]
-[-] Remove page 196352 from order 8. Range of pages: [196352, 196607]
-[+] Add page 196352 to order 7. Range of pages: [196352, 196479]
-[+] Add page 196480 to order 7. Range of pages: [196480, 196607]
-[-] Remove page 196480 from order 7. Range of pages: [196480, 196607]
-[-] Remove page 196352 from order 7. Range of pages: [196352, 196479]
-[+] Add page 196352 to order 6. Range of pages: [196352, 196415]
-[+] Add page 196416 to order 6. Range of pages: [196416, 196479]
-[-] Remove page 196416 from order 6. Range of pages: [196416, 196479]
-[Reserve] Reserve address [0x0000000020000000, 0x0000000020009000). Range of pages: [131072, 131081)
-[-] Remove page 131072 from order 10. Range of pages: [131072, 132095]
-[+] Add page 131072 to order 9. Range of pages: [131072, 131583]
-[+] Add page 131584 to order 9. Range of pages: [131584, 132095]
-[-] Remove page 131072 from order 9. Range of pages: [131072, 131583]
-[+] Add page 131072 to order 8. Range of pages: [131072, 131327]
-[+] Add page 131328 to order 8. Range of pages: [131328, 131583]
-[-] Remove page 131072 from order 8. Range of pages: [131072, 131327]
-[+] Add page 131072 to order 7. Range of pages: [131072, 131199]
-[+] Add page 131200 to order 7. Range of pages: [131200, 131327]
-[-] Remove page 131072 from order 7. Range of pages: [131072, 131199]
-[+] Add page 131072 to order 6. Range of pages: [131072, 131135]
-[+] Add page 131136 to order 6. Range of pages: [131136, 131199]
-[-] Remove page 131072 from order 6. Range of pages: [131072, 131135]
-[+] Add page 131072 to order 5. Range of pages: [131072, 131103]
-[+] Add page 131104 to order 5. Range of pages: [131104, 131135]
-[-] Remove page 131072 from order 5. Range of pages: [131072, 131103]
-[+] Add page 131072 to order 4. Range of pages: [131072, 131087]
-[+] Add page 131088 to order 4. Range of pages: [131088, 131103]
-[-] Remove page 131072 from order 4. Range of pages: [131072, 131087]
-[+] Add page 131072 to order 3. Range of pages: [131072, 131079]
-[+] Add page 131080 to order 3. Range of pages: [131080, 131087]
-[-] Remove page 131080 from order 3. Range of pages: [131080, 131087]
-[+] Add page 131080 to order 2. Range of pages: [131080, 131083]
-[+] Add page 131084 to order 2. Range of pages: [131084, 131087]
-[-] Remove page 131072 from order 3. Range of pages: [131072, 131079]
-[-] Remove page 131080 from order 2. Range of pages: [131080, 131083]
-[+] Add page 131080 to order 1. Range of pages: [131080, 131081]
-[+] Add page 131082 to order 1. Range of pages: [131082, 131083]
-[-] Remove page 131080 from order 1. Range of pages: [131080, 131081]
-[+] Add page 131080 to order 0. Range of pages: [131080, 131080]
-[+] Add page 131081 to order 0. Range of pages: [131081, 131081]
-[-] Remove page 131080 from order 0. Range of pages: [131080, 131080]
-[Reserve] Reserve address [0x000000007dd8f000, 0x000000007dd90000). Range of pages: [515471, 515472)
-[Reserve] Reserve address [0x0000000020009000, 0x0000000020c09000). Range of pages: [131081, 134153)
-[-] Remove page 134144 from order 10. Range of pages: [134144, 135167]
-[+] Add page 134144 to order 9. Range of pages: [134144, 134655]
-[+] Add page 134656 to order 9. Range of pages: [134656, 135167]
-[-] Remove page 133120 from order 10. Range of pages: [133120, 134143]
-[-] Remove page 132096 from order 10. Range of pages: [132096, 133119]
-[-] Remove page 134144 from order 9. Range of pages: [134144, 134655]
-[+] Add page 134144 to order 8. Range of pages: [134144, 134399]
-[+] Add page 134400 to order 8. Range of pages: [134400, 134655]
-[-] Remove page 131584 from order 9. Range of pages: [131584, 132095]
-[-] Remove page 134144 from order 8. Range of pages: [134144, 134399]
-[+] Add page 134144 to order 7. Range of pages: [134144, 134271]
-[+] Add page 134272 to order 7. Range of pages: [134272, 134399]
-[-] Remove page 131328 from order 8. Range of pages: [131328, 131583]
-[-] Remove page 134144 from order 7. Range of pages: [134144, 134271]
-[+] Add page 134144 to order 6. Range of pages: [134144, 134207]
-[+] Add page 134208 to order 6. Range of pages: [134208, 134271]
-[-] Remove page 131200 from order 7. Range of pages: [131200, 131327]
-[-] Remove page 134144 from order 6. Range of pages: [134144, 134207]
-[+] Add page 134144 to order 5. Range of pages: [134144, 134175]
-[+] Add page 134176 to order 5. Range of pages: [134176, 134207]
-[-] Remove page 131136 from order 6. Range of pages: [131136, 131199]
-[-] Remove page 134144 from order 5. Range of pages: [134144, 134175]
-[+] Add page 134144 to order 4. Range of pages: [134144, 134159]
-[+] Add page 134160 to order 4. Range of pages: [134160, 134175]
-[-] Remove page 131104 from order 5. Range of pages: [131104, 131135]
-[-] Remove page 134144 from order 4. Range of pages: [134144, 134159]
-[+] Add page 134144 to order 3. Range of pages: [134144, 134151]
-[+] Add page 134152 to order 3. Range of pages: [134152, 134159]
-[-] Remove page 131088 from order 4. Range of pages: [131088, 131103]
-[-] Remove page 134152 from order 3. Range of pages: [134152, 134159]
-[+] Add page 134152 to order 2. Range of pages: [134152, 134155]
-[+] Add page 134156 to order 2. Range of pages: [134156, 134159]
-[-] Remove page 134144 from order 3. Range of pages: [134144, 134151]
-[-] Remove page 134152 from order 2. Range of pages: [134152, 134155]
-[+] Add page 134152 to order 1. Range of pages: [134152, 134153]
-[+] Add page 134154 to order 1. Range of pages: [134154, 134155]
-[-] Remove page 131084 from order 2. Range of pages: [131084, 131087]
-[-] Remove page 134152 from order 1. Range of pages: [134152, 134153]
-[+] Add page 134152 to order 0. Range of pages: [134152, 134152]
-[+] Add page 134153 to order 0. Range of pages: [134153, 134153]
-[-] Remove page 131082 from order 1. Range of pages: [131082, 131083]
-[-] Remove page 134152 from order 0. Range of pages: [134152, 134152]
-[-] Remove page 131081 from order 0. Range of pages: [131081, 131081]
-[Reserve] Reserve address [0x0000000020c09000, 0x0000000021809000). Range of pages: [134153, 137225)
-[-] Remove page 137216 from order 10. Range of pages: [137216, 138239]
-[+] Add page 137216 to order 9. Range of pages: [137216, 137727]
-[+] Add page 137728 to order 9. Range of pages: [137728, 138239]
-[-] Remove page 136192 from order 10. Range of pages: [136192, 137215]
-[-] Remove page 135168 from order 10. Range of pages: [135168, 136191]
-[-] Remove page 137216 from order 9. Range of pages: [137216, 137727]
-[+] Add page 137216 to order 8. Range of pages: [137216, 137471]
-[+] Add page 137472 to order 8. Range of pages: [137472, 137727]
-[-] Remove page 134656 from order 9. Range of pages: [134656, 135167]
-[-] Remove page 137216 from order 8. Range of pages: [137216, 137471]
-[+] Add page 137216 to order 7. Range of pages: [137216, 137343]
-[+] Add page 137344 to order 7. Range of pages: [137344, 137471]
-[-] Remove page 134400 from order 8. Range of pages: [134400, 134655]
-[-] Remove page 137216 from order 7. Range of pages: [137216, 137343]
-[+] Add page 137216 to order 6. Range of pages: [137216, 137279]
+[+] Add page 256 to order 8. Range of pages: [256, 511]
+[+] Add page 512 to order 9. Range of pages: [512, 1023]
+[+] Add page 1024 to order 10. Range of pages: [1024, 2047]
+[+] Add page 2048 to order 10. Range of pages: [2048, 3071]
+[+] Add page 3072 to order 10. Range of pages: [3072, 4095]
+[+] Add page 4096 to order 10. Range of pages: [4096, 5119]
+[+] Add page 5120 to order 10. Range of pages: [5120, 6143]
+[+] Add page 6144 to order 10. Range of pages: [6144, 7167]
+[+] Add page 7168 to order 10. Range of pages: [7168, 8191]
+[+] Add page 8192 to order 10. Range of pages: [8192, 9215]
+[+] Add page 9216 to order 10. Range of pages: [9216, 10239]
+[+] Add page 10240 to order 10. Range of pages: [10240, 11263]
+[+] Add page 11264 to order 10. Range of pages: [11264, 12287]
+[+] Add page 12289 to order 0. Range of pages: [12289, 12289]
+[+] Add page 12290 to order 1. Range of pages: [12290, 12291]
+[+] Add page 12292 to order 2. Range of pages: [12292, 12295]
+[+] Add page 12296 to order 3. Range of pages: [12296, 12303]
+[+] Add page 12304 to order 4. Range of pages: [12304, 12319]
+[+] Add page 12320 to order 5. Range of pages: [12320, 12351]
+[+] Add page 12352 to order 6. Range of pages: [12352, 12415]
+[+] Add page 12416 to order 7. Range of pages: [12416, 12543]
+[+] Add page 12544 to order 8. Range of pages: [12544, 12799]
+[+] Add page 12800 to order 9. Range of pages: [12800, 13311]
+[+] Add page 13312 to order 10. Range of pages: [13312, 14335]
+[+] Add page 14336 to order 10. Range of pages: [14336, 15359]
+[+] Add page 15360 to order 9. Range of pages: [15360, 15871]
+[+] Add page 15872 to order 8. Range of pages: [15872, 16127]
+[+] Add page 16384 to order 10. Range of pages: [16384, 17407]
+[+] Add page 17408 to order 10. Range of pages: [17408, 18431]
+[+] Add page 18432 to order 10. Range of pages: [18432, 19455]
+[+] Add page 19456 to order 10. Range of pages: [19456, 20479]
+[+] Add page 20480 to order 10. Range of pages: [20480, 21503]
+[+] Add page 21504 to order 10. Range of pages: [21504, 22527]
+[+] Add page 22528 to order 10. Range of pages: [22528, 23551]
+[+] Add page 23552 to order 10. Range of pages: [23552, 24575]
+[+] Add page 24576 to order 10. Range of pages: [24576, 25599]
+[+] Add page 25600 to order 10. Range of pages: [25600, 26623]
+[+] Add page 26624 to order 10. Range of pages: [26624, 27647]
+[+] Add page 27648 to order 10. Range of pages: [27648, 28671]
+[+] Add page 28672 to order 10. Range of pages: [28672, 29695]
+[+] Add page 29696 to order 10. Range of pages: [29696, 30719]
+[+] Add page 30720 to order 10. Range of pages: [30720, 31743]
+[+] Add page 31744 to order 10. Range of pages: [31744, 32767]
+[+] Add page 32768 to order 10. Range of pages: [32768, 33791]
+[+] Add page 33792 to order 10. Range of pages: [33792, 34815]
+[+] Add page 34816 to order 10. Range of pages: [34816, 35839]
+[+] Add page 35840 to order 10. Range of pages: [35840, 36863]
+[+] Add page 36864 to order 10. Range of pages: [36864, 37887]
+[+] Add page 37888 to order 10. Range of pages: [37888, 38911]
+[+] Add page 38912 to order 10. Range of pages: [38912, 39935]
+[+] Add page 39936 to order 10. Range of pages: [39936, 40959]
+[+] Add page 40960 to order 10. Range of pages: [40960, 41983]
+[+] Add page 41984 to order 10. Range of pages: [41984, 43007]
+[+] Add page 43008 to order 10. Range of pages: [43008, 44031]
+[+] Add page 44032 to order 10. Range of pages: [44032, 45055]
+[+] Add page 45056 to order 10. Range of pages: [45056, 46079]
+[+] Add page 46080 to order 10. Range of pages: [46080, 47103]
+[+] Add page 47104 to order 10. Range of pages: [47104, 48127]
+[+] Add page 48128 to order 10. Range of pages: [48128, 49151]
+[+] Add page 49152 to order 10. Range of pages: [49152, 50175]
+[+] Add page 50176 to order 10. Range of pages: [50176, 51199]
+[+] Add page 51200 to order 10. Range of pages: [51200, 52223]
+[+] Add page 52224 to order 10. Range of pages: [52224, 53247]
+[+] Add page 53248 to order 10. Range of pages: [53248, 54271]
+[+] Add page 54272 to order 10. Range of pages: [54272, 55295]
+[+] Add page 55296 to order 10. Range of pages: [55296, 56319]
+[+] Add page 56320 to order 10. Range of pages: [56320, 57343]
+[+] Add page 57344 to order 10. Range of pages: [57344, 58367]
+[+] Add page 58368 to order 10. Range of pages: [58368, 59391]
+[+] Add page 59392 to order 10. Range of pages: [59392, 60415]
+[+] Add page 60416 to order 10. Range of pages: [60416, 61439]
+[+] Add page 61440 to order 10. Range of pages: [61440, 62463]
+[+] Add page 62464 to order 10. Range of pages: [62464, 63487]
+[+] Add page 63488 to order 10. Range of pages: [63488, 64511]
+[+] Add page 64512 to order 10. Range of pages: [64512, 65535]
+[+] Add page 65536 to order 10. Range of pages: [65536, 66559]
+[+] Add page 66560 to order 10. Range of pages: [66560, 67583]
+[+] Add page 67584 to order 10. Range of pages: [67584, 68607]
+[+] Add page 68608 to order 10. Range of pages: [68608, 69631]
+[+] Add page 69632 to order 10. Range of pages: [69632, 70655]
+[+] Add page 70656 to order 10. Range of pages: [70656, 71679]
+[+] Add page 71680 to order 10. Range of pages: [71680, 72703]
+[+] Add page 72704 to order 10. Range of pages: [72704, 73727]
+[+] Add page 73728 to order 10. Range of pages: [73728, 74751]
+[+] Add page 74752 to order 10. Range of pages: [74752, 75775]
+[+] Add page 75776 to order 10. Range of pages: [75776, 76799]
+[+] Add page 76800 to order 10. Range of pages: [76800, 77823]
+[+] Add page 77824 to order 10. Range of pages: [77824, 78847]
+[+] Add page 78848 to order 10. Range of pages: [78848, 79871]
+[+] Add page 79872 to order 10. Range of pages: [79872, 80895]
+[+] Add page 80896 to order 10. Range of pages: [80896, 81919]
+[+] Add page 81920 to order 10. Range of pages: [81920, 82943]
+[+] Add page 82944 to order 10. Range of pages: [82944, 83967]
+[+] Add page 83968 to order 10. Range of pages: [83968, 84991]
+[+] Add page 84992 to order 10. Range of pages: [84992, 86015]
+[+] Add page 86016 to order 10. Range of pages: [86016, 87039]
+[+] Add page 87040 to order 10. Range of pages: [87040, 88063]
+[+] Add page 88064 to order 10. Range of pages: [88064, 89087]
+[+] Add page 89088 to order 10. Range of pages: [89088, 90111]
+[+] Add page 90112 to order 10. Range of pages: [90112, 91135]
+[+] Add page 91136 to order 10. Range of pages: [91136, 92159]
+[+] Add page 92160 to order 10. Range of pages: [92160, 93183]
+[+] Add page 93184 to order 10. Range of pages: [93184, 94207]
+[+] Add page 94208 to order 10. Range of pages: [94208, 95231]
+[+] Add page 95232 to order 10. Range of pages: [95232, 96255]
+[+] Add page 96256 to order 10. Range of pages: [96256, 97279]
+[+] Add page 97280 to order 10. Range of pages: [97280, 98303]
+[+] Add page 98304 to order 10. Range of pages: [98304, 99327]
+[+] Add page 99328 to order 10. Range of pages: [99328, 100351]
+[+] Add page 100352 to order 10. Range of pages: [100352, 101375]
+[+] Add page 101376 to order 10. Range of pages: [101376, 102399]
+[+] Add page 102400 to order 10. Range of pages: [102400, 103423]
+[+] Add page 103424 to order 10. Range of pages: [103424, 104447]
+[+] Add page 104448 to order 10. Range of pages: [104448, 105471]
+[+] Add page 105472 to order 10. Range of pages: [105472, 106495]
+[+] Add page 106496 to order 10. Range of pages: [106496, 107519]
+[+] Add page 107520 to order 10. Range of pages: [107520, 108543]
+[+] Add page 108544 to order 10. Range of pages: [108544, 109567]
+[+] Add page 109568 to order 10. Range of pages: [109568, 110591]
+[+] Add page 110592 to order 10. Range of pages: [110592, 111615]
+[+] Add page 111616 to order 10. Range of pages: [111616, 112639]
+[+] Add page 112640 to order 10. Range of pages: [112640, 113663]
+[+] Add page 113664 to order 10. Range of pages: [113664, 114687]
+[+] Add page 114688 to order 10. Range of pages: [114688, 115711]
+[+] Add page 115712 to order 10. Range of pages: [115712, 116735]
+[+] Add page 116736 to order 10. Range of pages: [116736, 117759]
+[+] Add page 117760 to order 10. Range of pages: [117760, 118783]
+[+] Add page 118784 to order 10. Range of pages: [118784, 119807]
+[+] Add page 119808 to order 10. Range of pages: [119808, 120831]
+[+] Add page 120832 to order 10. Range of pages: [120832, 121855]
+[+] Add page 121856 to order 10. Range of pages: [121856, 122879]
+[+] Add page 122880 to order 10. Range of pages: [122880, 123903]
+[+] Add page 123904 to order 10. Range of pages: [123904, 124927]
+[+] Add page 124928 to order 10. Range of pages: [124928, 125951]
+[+] Add page 125952 to order 10. Range of pages: [125952, 126975]
+[+] Add page 126976 to order 10. Range of pages: [126976, 127999]
+[+] Add page 128000 to order 10. Range of pages: [128000, 129023]
+[+] Add page 129024 to order 10. Range of pages: [129024, 130047]
+[+] Add page 130048 to order 10. Range of pages: [130048, 131071]
+[+] Add page 137258 to order 1. Range of pages: [137258, 137259]
+[+] Add page 137260 to order 2. Range of pages: [137260, 137263]
+[+] Add page 137264 to order 4. Range of pages: [137264, 137279]
 [+] Add page 137280 to order 6. Range of pages: [137280, 137343]
-[-] Remove page 134272 from order 7. Range of pages: [134272, 134399]
-[-] Remove page 137216 from order 6. Range of pages: [137216, 137279]
-[+] Add page 137216 to order 5. Range of pages: [137216, 137247]
-[+] Add page 137248 to order 5. Range of pages: [137248, 137279]
-[-] Remove page 134208 from order 6. Range of pages: [134208, 134271]
-[-] Remove page 137216 from order 5. Range of pages: [137216, 137247]
-[+] Add page 137216 to order 4. Range of pages: [137216, 137231]
-[+] Add page 137232 to order 4. Range of pages: [137232, 137247]
-[-] Remove page 134176 from order 5. Range of pages: [134176, 134207]
-[-] Remove page 137216 from order 4. Range of pages: [137216, 137231]
-[+] Add page 137216 to order 3. Range of pages: [137216, 137223]
-[+] Add page 137224 to order 3. Range of pages: [137224, 137231]
-[-] Remove page 134160 from order 4. Range of pages: [134160, 134175]
-[-] Remove page 137224 from order 3. Range of pages: [137224, 137231]
-[+] Add page 137224 to order 2. Range of pages: [137224, 137227]
-[+] Add page 137228 to order 2. Range of pages: [137228, 137231]
-[-] Remove page 137216 from order 3. Range of pages: [137216, 137223]
-[-] Remove page 137224 from order 2. Range of pages: [137224, 137227]
-[+] Add page 137224 to order 1. Range of pages: [137224, 137225]
-[+] Add page 137226 to order 1. Range of pages: [137226, 137227]
-[-] Remove page 134156 from order 2. Range of pages: [134156, 134159]
-[-] Remove page 137224 from order 1. Range of pages: [137224, 137225]
-[+] Add page 137224 to order 0. Range of pages: [137224, 137224]
-[+] Add page 137225 to order 0. Range of pages: [137225, 137225]
-[-] Remove page 134154 from order 1. Range of pages: [134154, 134155]
-[-] Remove page 137224 from order 0. Range of pages: [137224, 137224]
-[-] Remove page 134153 from order 0. Range of pages: [134153, 134153]
-[MM] advanced init done
+[+] Add page 137344 to order 7. Range of pages: [137344, 137471]
+[+] Add page 137472 to order 8. Range of pages: [137472, 137727]
+[+] Add page 137728 to order 9. Range of pages: [137728, 138239]
+[+] Add page 138240 to order 10. Range of pages: [138240, 139263]
+[+] Add page 139264 to order 10. Range of pages: [139264, 140287]
+[+] Add page 140288 to order 10. Range of pages: [140288, 141311]
+[+] Add page 141312 to order 10. Range of pages: [141312, 142335]
+[+] Add page 142336 to order 10. Range of pages: [142336, 143359]
+[+] Add page 143360 to order 10. Range of pages: [143360, 144383]
+[+] Add page 144384 to order 10. Range of pages: [144384, 145407]
+[+] Add page 145408 to order 10. Range of pages: [145408, 146431]
+[+] Add page 146432 to order 10. Range of pages: [146432, 147455]
+[+] Add page 147456 to order 10. Range of pages: [147456, 148479]
+[+] Add page 148480 to order 10. Range of pages: [148480, 149503]
+[+] Add page 149504 to order 10. Range of pages: [149504, 150527]
+[+] Add page 150528 to order 10. Range of pages: [150528, 151551]
+[+] Add page 151552 to order 10. Range of pages: [151552, 152575]
+[+] Add page 152576 to order 10. Range of pages: [152576, 153599]
+[+] Add page 153600 to order 10. Range of pages: [153600, 154623]
+[+] Add page 154624 to order 10. Range of pages: [154624, 155647]
+[+] Add page 155648 to order 10. Range of pages: [155648, 156671]
+[+] Add page 156672 to order 10. Range of pages: [156672, 157695]
+[+] Add page 157696 to order 10. Range of pages: [157696, 158719]
+[+] Add page 158720 to order 10. Range of pages: [158720, 159743]
+[+] Add page 159744 to order 10. Range of pages: [159744, 160767]
+[+] Add page 160768 to order 10. Range of pages: [160768, 161791]
+[+] Add page 161792 to order 10. Range of pages: [161792, 162815]
+[+] Add page 162816 to order 10. Range of pages: [162816, 163839]
+[+] Add page 163840 to order 10. Range of pages: [163840, 164863]
+[+] Add page 164864 to order 10. Range of pages: [164864, 165887]
+[+] Add page 165888 to order 10. Range of pages: [165888, 166911]
+[+] Add page 166912 to order 10. Range of pages: [166912, 167935]
+[+] Add page 167936 to order 10. Range of pages: [167936, 168959]
+[+] Add page 168960 to order 10. Range of pages: [168960, 169983]
+[+] Add page 169984 to order 10. Range of pages: [169984, 171007]
+[+] Add page 171008 to order 10. Range of pages: [171008, 172031]
+[+] Add page 172032 to order 10. Range of pages: [172032, 173055]
+[+] Add page 173056 to order 10. Range of pages: [173056, 174079]
+[+] Add page 174080 to order 10. Range of pages: [174080, 175103]
+[+] Add page 175104 to order 10. Range of pages: [175104, 176127]
+[+] Add page 176128 to order 10. Range of pages: [176128, 177151]
+[+] Add page 177152 to order 10. Range of pages: [177152, 178175]
+[+] Add page 178176 to order 10. Range of pages: [178176, 179199]
+[+] Add page 179200 to order 10. Range of pages: [179200, 180223]
+[+] Add page 180224 to order 10. Range of pages: [180224, 181247]
+[+] Add page 181248 to order 10. Range of pages: [181248, 182271]
+[+] Add page 182272 to order 10. Range of pages: [182272, 183295]
+[+] Add page 183296 to order 10. Range of pages: [183296, 184319]
+[+] Add page 184320 to order 10. Range of pages: [184320, 185343]
+[+] Add page 185344 to order 10. Range of pages: [185344, 186367]
+[+] Add page 186368 to order 10. Range of pages: [186368, 187391]
+[+] Add page 187392 to order 10. Range of pages: [187392, 188415]
+[+] Add page 188416 to order 10. Range of pages: [188416, 189439]
+[+] Add page 189440 to order 10. Range of pages: [189440, 190463]
+[+] Add page 190464 to order 10. Range of pages: [190464, 191487]
+[+] Add page 191488 to order 10. Range of pages: [191488, 192511]
+[+] Add page 192512 to order 10. Range of pages: [192512, 193535]
+[+] Add page 193536 to order 10. Range of pages: [193536, 194559]
+[+] Add page 194560 to order 10. Range of pages: [194560, 195583]
+[+] Add page 195584 to order 9. Range of pages: [195584, 196095]
+[+] Add page 196096 to order 8. Range of pages: [196096, 196351]
+[+] Add page 196352 to order 6. Range of pages: [196352, 196415]
+[+] Add page 197504 to order 7. Range of pages: [197504, 197631]
+[+] Add page 197632 to order 10. Range of pages: [197632, 198655]
+[+] Add page 198656 to order 10. Range of pages: [198656, 199679]
+[+] Add page 199680 to order 10. Range of pages: [199680, 200703]
+[+] Add page 200704 to order 10. Range of pages: [200704, 201727]
+[+] Add page 201728 to order 10. Range of pages: [201728, 202751]
+[+] Add page 202752 to order 10. Range of pages: [202752, 203775]
+[+] Add page 203776 to order 10. Range of pages: [203776, 204799]
+[+] Add page 204800 to order 10. Range of pages: [204800, 205823]
+[+] Add page 205824 to order 10. Range of pages: [205824, 206847]
+[+] Add page 206848 to order 10. Range of pages: [206848, 207871]
+[+] Add page 207872 to order 10. Range of pages: [207872, 208895]
+[+] Add page 208896 to order 10. Range of pages: [208896, 209919]
+[+] Add page 209920 to order 10. Range of pages: [209920, 210943]
+[+] Add page 210944 to order 10. Range of pages: [210944, 211967]
+[+] Add page 211968 to order 10. Range of pages: [211968, 212991]
+[+] Add page 212992 to order 10. Range of pages: [212992, 214015]
+[+] Add page 214016 to order 10. Range of pages: [214016, 215039]
+[+] Add page 215040 to order 10. Range of pages: [215040, 216063]
+[+] Add page 216064 to order 10. Range of pages: [216064, 217087]
+[+] Add page 217088 to order 10. Range of pages: [217088, 218111]
+[+] Add page 218112 to order 10. Range of pages: [218112, 219135]
+[+] Add page 219136 to order 10. Range of pages: [219136, 220159]
+[+] Add page 220160 to order 10. Range of pages: [220160, 221183]
+[+] Add page 221184 to order 10. Range of pages: [221184, 222207]
+[+] Add page 222208 to order 10. Range of pages: [222208, 223231]
+[+] Add page 223232 to order 10. Range of pages: [223232, 224255]
+[+] Add page 224256 to order 10. Range of pages: [224256, 225279]
+[+] Add page 225280 to order 10. Range of pages: [225280, 226303]
+[+] Add page 226304 to order 10. Range of pages: [226304, 227327]
+[+] Add page 227328 to order 10. Range of pages: [227328, 228351]
+[+] Add page 228352 to order 10. Range of pages: [228352, 229375]
+[+] Add page 229376 to order 10. Range of pages: [229376, 230399]
+[+] Add page 230400 to order 10. Range of pages: [230400, 231423]
+[+] Add page 231424 to order 10. Range of pages: [231424, 232447]
+[+] Add page 232448 to order 10. Range of pages: [232448, 233471]
+[+] Add page 233472 to order 10. Range of pages: [233472, 234495]
+[+] Add page 234496 to order 10. Range of pages: [234496, 235519]
+[+] Add page 235520 to order 10. Range of pages: [235520, 236543]
+[+] Add page 236544 to order 10. Range of pages: [236544, 237567]
+[+] Add page 237568 to order 10. Range of pages: [237568, 238591]
+[+] Add page 238592 to order 10. Range of pages: [238592, 239615]
+[+] Add page 239616 to order 10. Range of pages: [239616, 240639]
+[+] Add page 240640 to order 10. Range of pages: [240640, 241663]
+[+] Add page 241664 to order 10. Range of pages: [241664, 242687]
+[+] Add page 242688 to order 10. Range of pages: [242688, 243711]
+[+] Add page 243712 to order 10. Range of pages: [243712, 244735]
+[+] Add page 244736 to order 10. Range of pages: [244736, 245759]
+[+] Add page 245760 to order 10. Range of pages: [245760, 246783]
+[+] Add page 246784 to order 10. Range of pages: [246784, 247807]
+[+] Add page 247808 to order 10. Range of pages: [247808, 248831]
+[+] Add page 248832 to order 10. Range of pages: [248832, 249855]
+[+] Add page 249856 to order 10. Range of pages: [249856, 250879]
+[+] Add page 250880 to order 10. Range of pages: [250880, 251903]
+[+] Add page 251904 to order 10. Range of pages: [251904, 252927]
+[+] Add page 252928 to order 10. Range of pages: [252928, 253951]
+[+] Add page 253952 to order 10. Range of pages: [253952, 254975]
+[+] Add page 254976 to order 10. Range of pages: [254976, 255999]
+[+] Add page 256000 to order 10. Range of pages: [256000, 257023]
+[+] Add page 257024 to order 10. Range of pages: [257024, 258047]
+[+] Add page 258048 to order 10. Range of pages: [258048, 259071]
+[+] Add page 259072 to order 10. Range of pages: [259072, 260095]
+[+] Add page 260096 to order 10. Range of pages: [260096, 261119]
+[+] Add page 261120 to order 10. Range of pages: [261120, 262143]
+[+] Add page 262144 to order 10. Range of pages: [262144, 263167]
+[+] Add page 263168 to order 10. Range of pages: [263168, 264191]
+[+] Add page 264192 to order 10. Range of pages: [264192, 265215]
+[+] Add page 265216 to order 10. Range of pages: [265216, 266239]
+[+] Add page 266240 to order 10. Range of pages: [266240, 267263]
+[+] Add page 267264 to order 10. Range of pages: [267264, 268287]
+[+] Add page 268288 to order 10. Range of pages: [268288, 269311]
+[+] Add page 269312 to order 10. Range of pages: [269312, 270335]
+[+] Add page 270336 to order 10. Range of pages: [270336, 271359]
+[+] Add page 271360 to order 10. Range of pages: [271360, 272383]
+[+] Add page 272384 to order 10. Range of pages: [272384, 273407]
+[+] Add page 273408 to order 10. Range of pages: [273408, 274431]
+[+] Add page 274432 to order 10. Range of pages: [274432, 275455]
+[+] Add page 275456 to order 10. Range of pages: [275456, 276479]
+[+] Add page 276480 to order 10. Range of pages: [276480, 277503]
+[+] Add page 277504 to order 10. Range of pages: [277504, 278527]
+[+] Add page 278528 to order 10. Range of pages: [278528, 279551]
+[+] Add page 279552 to order 10. Range of pages: [279552, 280575]
+[+] Add page 280576 to order 10. Range of pages: [280576, 281599]
+[+] Add page 281600 to order 10. Range of pages: [281600, 282623]
+[+] Add page 282624 to order 10. Range of pages: [282624, 283647]
+[+] Add page 283648 to order 10. Range of pages: [283648, 284671]
+[+] Add page 284672 to order 10. Range of pages: [284672, 285695]
+[+] Add page 285696 to order 10. Range of pages: [285696, 286719]
+[+] Add page 286720 to order 10. Range of pages: [286720, 287743]
+[+] Add page 287744 to order 10. Range of pages: [287744, 288767]
+[+] Add page 288768 to order 10. Range of pages: [288768, 289791]
+[+] Add page 289792 to order 10. Range of pages: [289792, 290815]
+[+] Add page 290816 to order 10. Range of pages: [290816, 291839]
+[+] Add page 291840 to order 10. Range of pages: [291840, 292863]
+[+] Add page 292864 to order 10. Range of pages: [292864, 293887]
+[+] Add page 293888 to order 10. Range of pages: [293888, 294911]
+[+] Add page 294912 to order 10. Range of pages: [294912, 295935]
+[+] Add page 295936 to order 10. Range of pages: [295936, 296959]
+[+] Add page 296960 to order 10. Range of pages: [296960, 297983]
+[+] Add page 297984 to order 10. Range of pages: [297984, 299007]
+[+] Add page 299008 to order 10. Range of pages: [299008, 300031]
+[+] Add page 300032 to order 10. Range of pages: [300032, 301055]
+[+] Add page 301056 to order 10. Range of pages: [301056, 302079]
+[+] Add page 302080 to order 10. Range of pages: [302080, 303103]
+[+] Add page 303104 to order 10. Range of pages: [303104, 304127]
+[+] Add page 304128 to order 10. Range of pages: [304128, 305151]
+[+] Add page 305152 to order 10. Range of pages: [305152, 306175]
+[+] Add page 306176 to order 10. Range of pages: [306176, 307199]
+[+] Add page 307200 to order 10. Range of pages: [307200, 308223]
+[+] Add page 308224 to order 10. Range of pages: [308224, 309247]
+[+] Add page 309248 to order 10. Range of pages: [309248, 310271]
+[+] Add page 310272 to order 10. Range of pages: [310272, 311295]
+[+] Add page 311296 to order 10. Range of pages: [311296, 312319]
+[+] Add page 312320 to order 10. Range of pages: [312320, 313343]
+[+] Add page 313344 to order 10. Range of pages: [313344, 314367]
+[+] Add page 314368 to order 10. Range of pages: [314368, 315391]
+[+] Add page 315392 to order 10. Range of pages: [315392, 316415]
+[+] Add page 316416 to order 10. Range of pages: [316416, 317439]
+[+] Add page 317440 to order 10. Range of pages: [317440, 318463]
+[+] Add page 318464 to order 10. Range of pages: [318464, 319487]
+[+] Add page 319488 to order 10. Range of pages: [319488, 320511]
+[+] Add page 320512 to order 10. Range of pages: [320512, 321535]
+[+] Add page 321536 to order 10. Range of pages: [321536, 322559]
+[+] Add page 322560 to order 10. Range of pages: [322560, 323583]
+[+] Add page 323584 to order 10. Range of pages: [323584, 324607]
+[+] Add page 324608 to order 10. Range of pages: [324608, 325631]
+[+] Add page 325632 to order 10. Range of pages: [325632, 326655]
+[+] Add page 326656 to order 10. Range of pages: [326656, 327679]
+[+] Add page 327680 to order 10. Range of pages: [327680, 328703]
+[+] Add page 328704 to order 10. Range of pages: [328704, 329727]
+[+] Add page 329728 to order 10. Range of pages: [329728, 330751]
+[+] Add page 330752 to order 10. Range of pages: [330752, 331775]
+[+] Add page 331776 to order 10. Range of pages: [331776, 332799]
+[+] Add page 332800 to order 10. Range of pages: [332800, 333823]
+[+] Add page 333824 to order 10. Range of pages: [333824, 334847]
+[+] Add page 334848 to order 10. Range of pages: [334848, 335871]
+[+] Add page 335872 to order 10. Range of pages: [335872, 336895]
+[+] Add page 336896 to order 10. Range of pages: [336896, 337919]
+[+] Add page 337920 to order 10. Range of pages: [337920, 338943]
+[+] Add page 338944 to order 10. Range of pages: [338944, 339967]
+[+] Add page 339968 to order 10. Range of pages: [339968, 340991]
+[+] Add page 340992 to order 10. Range of pages: [340992, 342015]
+[+] Add page 342016 to order 10. Range of pages: [342016, 343039]
+[+] Add page 343040 to order 10. Range of pages: [343040, 344063]
+[+] Add page 344064 to order 10. Range of pages: [344064, 345087]
+[+] Add page 345088 to order 10. Range of pages: [345088, 346111]
+[+] Add page 346112 to order 10. Range of pages: [346112, 347135]
+[+] Add page 347136 to order 10. Range of pages: [347136, 348159]
+[+] Add page 348160 to order 10. Range of pages: [348160, 349183]
+[+] Add page 349184 to order 10. Range of pages: [349184, 350207]
+[+] Add page 350208 to order 10. Range of pages: [350208, 351231]
+[+] Add page 351232 to order 10. Range of pages: [351232, 352255]
+[+] Add page 352256 to order 10. Range of pages: [352256, 353279]
+[+] Add page 353280 to order 10. Range of pages: [353280, 354303]
+[+] Add page 354304 to order 10. Range of pages: [354304, 355327]
+[+] Add page 355328 to order 10. Range of pages: [355328, 356351]
+[+] Add page 356352 to order 10. Range of pages: [356352, 357375]
+[+] Add page 357376 to order 10. Range of pages: [357376, 358399]
+[+] Add page 358400 to order 10. Range of pages: [358400, 359423]
+[+] Add page 359424 to order 10. Range of pages: [359424, 360447]
+[+] Add page 360448 to order 10. Range of pages: [360448, 361471]
+[+] Add page 361472 to order 10. Range of pages: [361472, 362495]
+[+] Add page 362496 to order 10. Range of pages: [362496, 363519]
+[+] Add page 363520 to order 10. Range of pages: [363520, 364543]
+[+] Add page 364544 to order 10. Range of pages: [364544, 365567]
+[+] Add page 365568 to order 10. Range of pages: [365568, 366591]
+[+] Add page 366592 to order 10. Range of pages: [366592, 367615]
+[+] Add page 367616 to order 10. Range of pages: [367616, 368639]
+[+] Add page 368640 to order 10. Range of pages: [368640, 369663]
+[+] Add page 369664 to order 10. Range of pages: [369664, 370687]
+[+] Add page 370688 to order 10. Range of pages: [370688, 371711]
+[+] Add page 371712 to order 10. Range of pages: [371712, 372735]
+[+] Add page 372736 to order 10. Range of pages: [372736, 373759]
+[+] Add page 373760 to order 10. Range of pages: [373760, 374783]
+[+] Add page 374784 to order 10. Range of pages: [374784, 375807]
+[+] Add page 375808 to order 10. Range of pages: [375808, 376831]
+[+] Add page 376832 to order 10. Range of pages: [376832, 377855]
+[+] Add page 377856 to order 10. Range of pages: [377856, 378879]
+[+] Add page 378880 to order 10. Range of pages: [378880, 379903]
+[+] Add page 379904 to order 10. Range of pages: [379904, 380927]
+[+] Add page 380928 to order 10. Range of pages: [380928, 381951]
+[+] Add page 381952 to order 10. Range of pages: [381952, 382975]
+[+] Add page 382976 to order 10. Range of pages: [382976, 383999]
+[+] Add page 384000 to order 10. Range of pages: [384000, 385023]
+[+] Add page 385024 to order 10. Range of pages: [385024, 386047]
+[+] Add page 386048 to order 10. Range of pages: [386048, 387071]
+[+] Add page 387072 to order 10. Range of pages: [387072, 388095]
+[+] Add page 388096 to order 10. Range of pages: [388096, 389119]
+[+] Add page 389120 to order 10. Range of pages: [389120, 390143]
+[+] Add page 390144 to order 10. Range of pages: [390144, 391167]
+[+] Add page 391168 to order 10. Range of pages: [391168, 392191]
+[+] Add page 392192 to order 10. Range of pages: [392192, 393215]
+[+] Add page 393216 to order 10. Range of pages: [393216, 394239]
+[+] Add page 394240 to order 10. Range of pages: [394240, 395263]
+[+] Add page 395264 to order 10. Range of pages: [395264, 396287]
+[+] Add page 396288 to order 10. Range of pages: [396288, 397311]
+[+] Add page 397312 to order 10. Range of pages: [397312, 398335]
+[+] Add page 398336 to order 10. Range of pages: [398336, 399359]
+[+] Add page 399360 to order 10. Range of pages: [399360, 400383]
+[+] Add page 400384 to order 10. Range of pages: [400384, 401407]
+[+] Add page 401408 to order 10. Range of pages: [401408, 402431]
+[+] Add page 402432 to order 10. Range of pages: [402432, 403455]
+[+] Add page 403456 to order 10. Range of pages: [403456, 404479]
+[+] Add page 404480 to order 10. Range of pages: [404480, 405503]
+[+] Add page 405504 to order 10. Range of pages: [405504, 406527]
+[+] Add page 406528 to order 10. Range of pages: [406528, 407551]
+[+] Add page 407552 to order 10. Range of pages: [407552, 408575]
+[+] Add page 408576 to order 10. Range of pages: [408576, 409599]
+[+] Add page 409600 to order 10. Range of pages: [409600, 410623]
+[+] Add page 410624 to order 10. Range of pages: [410624, 411647]
+[+] Add page 411648 to order 10. Range of pages: [411648, 412671]
+[+] Add page 412672 to order 10. Range of pages: [412672, 413695]
+[+] Add page 413696 to order 10. Range of pages: [413696, 414719]
+[+] Add page 414720 to order 10. Range of pages: [414720, 415743]
+[+] Add page 415744 to order 10. Range of pages: [415744, 416767]
+[+] Add page 416768 to order 10. Range of pages: [416768, 417791]
+[+] Add page 417792 to order 10. Range of pages: [417792, 418815]
+[+] Add page 418816 to order 10. Range of pages: [418816, 419839]
+[+] Add page 419840 to order 10. Range of pages: [419840, 420863]
+[+] Add page 420864 to order 10. Range of pages: [420864, 421887]
+[+] Add page 421888 to order 10. Range of pages: [421888, 422911]
+[+] Add page 422912 to order 10. Range of pages: [422912, 423935]
+[+] Add page 423936 to order 10. Range of pages: [423936, 424959]
+[+] Add page 424960 to order 10. Range of pages: [424960, 425983]
+[+] Add page 425984 to order 10. Range of pages: [425984, 427007]
+[+] Add page 427008 to order 10. Range of pages: [427008, 428031]
+[+] Add page 428032 to order 10. Range of pages: [428032, 429055]
+[+] Add page 429056 to order 10. Range of pages: [429056, 430079]
+[+] Add page 430080 to order 10. Range of pages: [430080, 431103]
+[+] Add page 431104 to order 10. Range of pages: [431104, 432127]
+[+] Add page 432128 to order 10. Range of pages: [432128, 433151]
+[+] Add page 433152 to order 10. Range of pages: [433152, 434175]
+[+] Add page 434176 to order 10. Range of pages: [434176, 435199]
+[+] Add page 435200 to order 10. Range of pages: [435200, 436223]
+[+] Add page 436224 to order 10. Range of pages: [436224, 437247]
+[+] Add page 437248 to order 10. Range of pages: [437248, 438271]
+[+] Add page 438272 to order 10. Range of pages: [438272, 439295]
+[+] Add page 439296 to order 10. Range of pages: [439296, 440319]
+[+] Add page 440320 to order 10. Range of pages: [440320, 441343]
+[+] Add page 441344 to order 10. Range of pages: [441344, 442367]
+[+] Add page 442368 to order 10. Range of pages: [442368, 443391]
+[+] Add page 443392 to order 10. Range of pages: [443392, 444415]
+[+] Add page 444416 to order 10. Range of pages: [444416, 445439]
+[+] Add page 445440 to order 10. Range of pages: [445440, 446463]
+[+] Add page 446464 to order 10. Range of pages: [446464, 447487]
+[+] Add page 447488 to order 10. Range of pages: [447488, 448511]
+[+] Add page 448512 to order 10. Range of pages: [448512, 449535]
+[+] Add page 449536 to order 10. Range of pages: [449536, 450559]
+[+] Add page 450560 to order 10. Range of pages: [450560, 451583]
+[+] Add page 451584 to order 10. Range of pages: [451584, 452607]
+[+] Add page 452608 to order 10. Range of pages: [452608, 453631]
+[+] Add page 453632 to order 10. Range of pages: [453632, 454655]
+[+] Add page 454656 to order 10. Range of pages: [454656, 455679]
+[+] Add page 455680 to order 10. Range of pages: [455680, 456703]
+[+] Add page 456704 to order 10. Range of pages: [456704, 457727]
+[+] Add page 457728 to order 10. Range of pages: [457728, 458751]
+[+] Add page 458752 to order 10. Range of pages: [458752, 459775]
+[+] Add page 459776 to order 10. Range of pages: [459776, 460799]
+[+] Add page 460800 to order 10. Range of pages: [460800, 461823]
+[+] Add page 461824 to order 10. Range of pages: [461824, 462847]
+[+] Add page 462848 to order 10. Range of pages: [462848, 463871]
+[+] Add page 463872 to order 10. Range of pages: [463872, 464895]
+[+] Add page 464896 to order 10. Range of pages: [464896, 465919]
+[+] Add page 465920 to order 10. Range of pages: [465920, 466943]
+[+] Add page 466944 to order 10. Range of pages: [466944, 467967]
+[+] Add page 467968 to order 10. Range of pages: [467968, 468991]
+[+] Add page 468992 to order 10. Range of pages: [468992, 470015]
+[+] Add page 470016 to order 10. Range of pages: [470016, 471039]
+[+] Add page 471040 to order 10. Range of pages: [471040, 472063]
+[+] Add page 472064 to order 10. Range of pages: [472064, 473087]
+[+] Add page 473088 to order 10. Range of pages: [473088, 474111]
+[+] Add page 474112 to order 10. Range of pages: [474112, 475135]
+[+] Add page 475136 to order 10. Range of pages: [475136, 476159]
+[+] Add page 476160 to order 10. Range of pages: [476160, 477183]
+[+] Add page 477184 to order 10. Range of pages: [477184, 478207]
+[+] Add page 478208 to order 10. Range of pages: [478208, 479231]
+[+] Add page 479232 to order 10. Range of pages: [479232, 480255]
+[+] Add page 480256 to order 10. Range of pages: [480256, 481279]
+[+] Add page 481280 to order 10. Range of pages: [481280, 482303]
+[+] Add page 482304 to order 10. Range of pages: [482304, 483327]
+[+] Add page 483328 to order 10. Range of pages: [483328, 484351]
+[+] Add page 484352 to order 10. Range of pages: [484352, 485375]
+[+] Add page 485376 to order 10. Range of pages: [485376, 486399]
+[+] Add page 486400 to order 10. Range of pages: [486400, 487423]
+[+] Add page 487424 to order 10. Range of pages: [487424, 488447]
+[+] Add page 488448 to order 10. Range of pages: [488448, 489471]
+[+] Add page 489472 to order 10. Range of pages: [489472, 490495]
+[+] Add page 490496 to order 10. Range of pages: [490496, 491519]
+[+] Add page 491520 to order 10. Range of pages: [491520, 492543]
+[+] Add page 492544 to order 10. Range of pages: [492544, 493567]
+[+] Add page 493568 to order 10. Range of pages: [493568, 494591]
+[+] Add page 494592 to order 10. Range of pages: [494592, 495615]
+[+] Add page 495616 to order 10. Range of pages: [495616, 496639]
+[+] Add page 496640 to order 10. Range of pages: [496640, 497663]
+[+] Add page 497664 to order 10. Range of pages: [497664, 498687]
+[+] Add page 498688 to order 10. Range of pages: [498688, 499711]
+[+] Add page 499712 to order 10. Range of pages: [499712, 500735]
+[+] Add page 500736 to order 10. Range of pages: [500736, 501759]
+[+] Add page 501760 to order 10. Range of pages: [501760, 502783]
+[+] Add page 502784 to order 10. Range of pages: [502784, 503807]
+[+] Add page 503808 to order 10. Range of pages: [503808, 504831]
+[+] Add page 504832 to order 10. Range of pages: [504832, 505855]
+[+] Add page 505856 to order 10. Range of pages: [505856, 506879]
+[+] Add page 506880 to order 10. Range of pages: [506880, 507903]
+[+] Add page 507904 to order 10. Range of pages: [507904, 508927]
+[+] Add page 508928 to order 10. Range of pages: [508928, 509951]
+[+] Add page 509952 to order 10. Range of pages: [509952, 510975]
+[+] Add page 510976 to order 10. Range of pages: [510976, 511999]
+[+] Add page 512000 to order 10. Range of pages: [512000, 513023]
+[+] Add page 513024 to order 10. Range of pages: [513024, 514047]
+[+] Add page 514048 to order 10. Range of pages: [514048, 515071]
+[+] Add page 515072 to order 8. Range of pages: [515072, 515327]
+[+] Add page 515328 to order 7. Range of pages: [515328, 515455]
+[+] Add page 515456 to order 3. Range of pages: [515456, 515463]
+[+] Add page 515464 to order 2. Range of pages: [515464, 515467]
+[+] Add page 515468 to order 1. Range of pages: [515468, 515469]
+[+] Add page 515470 to order 0. Range of pages: [515470, 515470]
+[+] Add page 515472 to order 4. Range of pages: [515472, 515487]
+[+] Add page 515488 to order 5. Range of pages: [515488, 515519]
+[+] Add page 515520 to order 6. Range of pages: [515520, 515583]
+[+] Add page 515584 to order 9. Range of pages: [515584, 516095]
+[+] Add page 516096 to order 10. Range of pages: [516096, 517119]
+[+] Add page 517120 to order 10. Range of pages: [517120, 518143]
+[+] Add page 518144 to order 10. Range of pages: [518144, 519167]
+[+] Add page 519168 to order 10. Range of pages: [519168, 520191]
+memory allocator ready
 
-Starting kernel ...
 Type help to get commands.
 
 opi-rv2> memtest
 Testing memory allocation...
-[-] Remove page 137225 from order 0. Range of pages: [137225, 137225]
-[Page] Allocate 0x0000000021809000 at order 0, page 137225. Next address at order 0: 0x000000002180a000
-[-] Remove page 137226 from order 1. Range of pages: [137226, 137227]
-[Page] Allocate 0x000000002180a000 at order 1, page 137226. Next address at order 1: 0x000000002180c000
 [-] Remove page 515470 from order 0. Range of pages: [515470, 515470]
 [Page] Allocate 0x000000007dd8e000 at order 0, page 515470. Next address at order 0: 0x000000007dd8f000
-[-] Remove page 515469 from order 0. Range of pages: [515469, 515469]
-[Page] Allocate 0x000000007dd8d000 at order 0, page 515469. Next address at order 0: 0x000000007dd8e000
-[*] Buddy found! buddy idx: 137224 for page 137225 with order 0
-[+] Add page 137225 to order 0. Range of pages: [137225, 137225]
-[Page] Free 0x0000000021809000 and add back to order 0, page 137225. Next address at order 0: 0x000000002180a000
-[*] Buddy found! buddy idx: 137224 for page 137226 with order 1
-[+] Add page 137226 to order 1. Range of pages: [137226, 137227]
-[Page] Free 0x000000002180a000 and add back to order 1, page 137226. Next address at order 1: 0x000000002180c000
+[-] Remove page 515468 from order 1. Range of pages: [515468, 515469]
+[Page] Allocate 0x000000007dd8c000 at order 1, page 515468. Next address at order 1: 0x000000007dd8e000
+[-] Remove page 12289 from order 0. Range of pages: [12289, 12289]
+[Page] Allocate 0x0000000003001000 at order 0, page 12289. Next address at order 0: 0x0000000003002000
+[-] Remove page 137258 from order 1. Range of pages: [137258, 137259]
+[*] Buddy found! buddy idx: 137259 for page 137258 with order 0
+[+] Add page 137259 to order 0. Range of pages: [137259, 137259]
+[Page] Allocate 0x000000002182a000 at order 0, page 137258. Next address at order 0: 0x000000002182b000
 [*] Buddy found! buddy idx: 515471 for page 515470 with order 0
 [+] Add page 515470 to order 0. Range of pages: [515470, 515470]
 [Page] Free 0x000000007dd8e000 and add back to order 0, page 515470. Next address at order 0: 0x000000007dd8f000
-[*] Buddy found! buddy idx: 515468 for page 515469 with order 0
-[+] Add page 515469 to order 0. Range of pages: [515469, 515469]
-[Page] Free 0x000000007dd8d000 and add back to order 0, page 515469. Next address at order 0: 0x000000007dd8e000
+[*] Buddy found! buddy idx: 515470 for page 515468 with order 1
+[+] Add page 515468 to order 1. Range of pages: [515468, 515469]
+[Page] Free 0x000000007dd8c000 and add back to order 1, page 515468. Next address at order 1: 0x000000007dd8e000
+[*] Buddy found! buddy idx: 12288 for page 12289 with order 0
+[+] Add page 12289 to order 0. Range of pages: [12289, 12289]
+[Page] Free 0x0000000003001000 and add back to order 0, page 12289. Next address at order 0: 0x0000000003002000
+[*] Buddy found! buddy idx: 137259 for page 137258 with order 0
+[-] Remove page 137259 from order 0. Range of pages: [137259, 137259]
+[*] Buddy found! buddy idx: 137256 for page 137258 with order 1
+[+] Add page 137258 to order 1. Range of pages: [137258, 137259]
+[Page] Free 0x000000002182a000 and add back to order 1, page 137258. Next address at order 1: 0x000000002182c000
 Testing dynamic allocator...
+[-] Remove page 12289 from order 0. Range of pages: [12289, 12289]
+[Page] Allocate 0x0000000003001000 at order 0, page 12289. Next address at order 0: 0x0000000003002000
+[Chunk] Allocate 0x0000000003001ff0 at chunk size 16
+[-] Remove page 515470 from order 0. Range of pages: [515470, 515470]
+[Page] Allocate 0x000000007dd8e000 at order 0, page 515470. Next address at order 0: 0x000000007dd8f000
+[Chunk] Allocate 0x000000007dd8efe0 at chunk size 32
+[-] Remove page 137258 from order 1. Range of pages: [137258, 137259]
+[*] Buddy found! buddy idx: 137259 for page 137258 with order 0
+[+] Add page 137259 to order 0. Range of pages: [137259, 137259]
+[Page] Allocate 0x000000002182a000 at order 0, page 137258. Next address at order 0: 0x000000002182b000
+[Chunk] Allocate 0x000000002182afc0 at chunk size 64
+[-] Remove page 137259 from order 0. Range of pages: [137259, 137259]
+[Page] Allocate 0x000000002182b000 at order 0, page 137259. Next address at order 0: 0x000000002182c000
+[Chunk] Allocate 0x000000002182bf80 at chunk size 128
+[-] Remove page 515468 from order 1. Range of pages: [515468, 515469]
+[*] Buddy found! buddy idx: 515469 for page 515468 with order 0
+[+] Add page 515469 to order 0. Range of pages: [515469, 515469]
+[Page] Allocate 0x000000007dd8c000 at order 0, page 515468. Next address at order 0: 0x000000007dd8d000
+[Chunk] Allocate 0x000000007dd8cf00 at chunk size 256
 [-] Remove page 515469 from order 0. Range of pages: [515469, 515469]
 [Page] Allocate 0x000000007dd8d000 at order 0, page 515469. Next address at order 0: 0x000000007dd8e000
-[Chunk] Allocate 0x000000007dd8dff0 at chunk size 16
-[-] Remove page 515470 from order 0. Range of pages: [515470, 515470]
-[Page] Allocate 0x000000007dd8e000 at order 0, page 515470. Next address at order 0: 0x000000007dd8f000
-[Chunk] Allocate 0x000000007dd8efe0 at chunk size 32
-[-] Remove page 137225 from order 0. Range of pages: [137225, 137225]
-[Page] Allocate 0x0000000021809000 at order 0, page 137225. Next address at order 0: 0x000000002180a000
-[Chunk] Allocate 0x0000000021809fc0 at chunk size 64
-[-] Remove page 137226 from order 1. Range of pages: [137226, 137227]
-[*] Buddy found! buddy idx: 137227 for page 137226 with order 0
-[+] Add page 137227 to order 0. Range of pages: [137227, 137227]
-[Page] Allocate 0x000000002180a000 at order 0, page 137226. Next address at order 0: 0x000000002180b000
-[Chunk] Allocate 0x000000002180af80 at chunk size 128
-[Chunk] Free 0x000000007dd8dff0 at chunk size 16
+[Chunk] Allocate 0x000000007dd8de00 at chunk size 512
+[-] Remove page 12290 from order 1. Range of pages: [12290, 12291]
+[*] Buddy found! buddy idx: 12291 for page 12290 with order 0
+[+] Add page 12291 to order 0. Range of pages: [12291, 12291]
+[Page] Allocate 0x0000000003002000 at order 0, page 12290. Next address at order 0: 0x0000000003003000
+[Chunk] Allocate 0x0000000003002c00 at chunk size 1024
+[-] Remove page 12291 from order 0. Range of pages: [12291, 12291]
+[Page] Allocate 0x0000000003003000 at order 0, page 12291. Next address at order 0: 0x0000000003004000
+[Chunk] Allocate 0x0000000003003800 at chunk size 2048
+[Chunk] Free 0x0000000003001ff0 at chunk size 16
+[*] Buddy found! buddy idx: 12288 for page 12289 with order 0
+[+] Add page 12289 to order 0. Range of pages: [12289, 12289]
+[Page] Free 0x0000000003001000 and add back to order 0, page 12289. Next address at order 0: 0x0000000003002000
+[Chunk] Free 0x000000007dd8efe0 at chunk size 32
+[*] Buddy found! buddy idx: 515471 for page 515470 with order 0
+[+] Add page 515470 to order 0. Range of pages: [515470, 515470]
+[Page] Free 0x000000007dd8e000 and add back to order 0, page 515470. Next address at order 0: 0x000000007dd8f000
+[Chunk] Free 0x000000002182afc0 at chunk size 64
+[*] Buddy found! buddy idx: 137259 for page 137258 with order 0
+[+] Add page 137258 to order 0. Range of pages: [137258, 137258]
+[Page] Free 0x000000002182a000 and add back to order 0, page 137258. Next address at order 0: 0x000000002182b000
+[Chunk] Free 0x000000002182bf80 at chunk size 128
+[*] Buddy found! buddy idx: 137258 for page 137259 with order 0
+[-] Remove page 137258 from order 0. Range of pages: [137258, 137258]
+[*] Buddy found! buddy idx: 137256 for page 137258 with order 1
+[+] Add page 137258 to order 1. Range of pages: [137258, 137259]
+[Page] Free 0x000000002182a000 and add back to order 1, page 137258. Next address at order 1: 0x000000002182c000
+[Chunk] Free 0x000000007dd8cf00 at chunk size 256
+[*] Buddy found! buddy idx: 515469 for page 515468 with order 0
+[+] Add page 515468 to order 0. Range of pages: [515468, 515468]
+[Page] Free 0x000000007dd8c000 and add back to order 0, page 515468. Next address at order 0: 0x000000007dd8d000
+[Chunk] Free 0x000000007dd8de00 at chunk size 512
 [*] Buddy found! buddy idx: 515468 for page 515469 with order 0
-[+] Add page 515469 to order 0. Range of pages: [515469, 515469]
-[Page] Free 0x000000007dd8d000 and add back to order 0, page 515469. Next address at order 0: 0x000000007dd8e000
-[Chunk] Free 0x000000007dd8efe0 at chunk size 32
-[*] Buddy found! buddy idx: 515471 for page 515470 with order 0
-[+] Add page 515470 to order 0. Range of pages: [515470, 515470]
-[Page] Free 0x000000007dd8e000 and add back to order 0, page 515470. Next address at order 0: 0x000000007dd8f000
-[Chunk] Free 0x0000000021809fc0 at chunk size 64
-[*] Buddy found! buddy idx: 137224 for page 137225 with order 0
-[+] Add page 137225 to order 0. Range of pages: [137225, 137225]
-[Page] Free 0x0000000021809000 and add back to order 0, page 137225. Next address at order 0: 0x000000002180a000
-[Chunk] Free 0x000000002180af80 at chunk size 128
-[*] Buddy found! buddy idx: 137227 for page 137226 with order 0
-[-] Remove page 137227 from order 0. Range of pages: [137227, 137227]
-[*] Buddy found! buddy idx: 137224 for page 137226 with order 1
-[+] Add page 137226 to order 1. Range of pages: [137226, 137227]
-[Page] Free 0x000000002180a000 and add back to order 1, page 137226. Next address at order 1: 0x000000002180c000
-[-] Remove page 137225 from order 0. Range of pages: [137225, 137225]
-[Page] Allocate 0x0000000021809000 at order 0, page 137225. Next address at order 0: 0x000000002180a000
-[Chunk] Allocate 0x0000000021809ff0 at chunk size 16
+[-] Remove page 515468 from order 0. Range of pages: [515468, 515468]
+[*] Buddy found! buddy idx: 515470 for page 515468 with order 1
+[+] Add page 515468 to order 1. Range of pages: [515468, 515469]
+[Page] Free 0x000000007dd8c000 and add back to order 1, page 515468. Next address at order 1: 0x000000007dd8e000
+[Chunk] Free 0x0000000003002c00 at chunk size 1024
+[*] Buddy found! buddy idx: 12291 for page 12290 with order 0
+[+] Add page 12290 to order 0. Range of pages: [12290, 12290]
+[Page] Free 0x0000000003002000 and add back to order 0, page 12290. Next address at order 0: 0x0000000003003000
+[Chunk] Free 0x0000000003003800 at chunk size 2048
+[*] Buddy found! buddy idx: 12290 for page 12291 with order 0
+[-] Remove page 12290 from order 0. Range of pages: [12290, 12290]
+[*] Buddy found! buddy idx: 12288 for page 12290 with order 1
+[+] Add page 12290 to order 1. Range of pages: [12290, 12291]
+[Page] Free 0x0000000003002000 and add back to order 1, page 12290. Next address at order 1: 0x0000000003004000
 [-] Remove page 515470 from order 0. Range of pages: [515470, 515470]
 [Page] Allocate 0x000000007dd8e000 at order 0, page 515470. Next address at order 0: 0x000000007dd8f000
-[Chunk] Allocate 0x000000007dd8efe0 at chunk size 32
-[Chunk] Free 0x0000000021809ff0 at chunk size 16
-[*] Buddy found! buddy idx: 137224 for page 137225 with order 0
-[+] Add page 137225 to order 0. Range of pages: [137225, 137225]
-[Page] Free 0x0000000021809000 and add back to order 0, page 137225. Next address at order 0: 0x000000002180a000
-[Chunk] Free 0x000000007dd8efe0 at chunk size 32
+[Chunk] Allocate 0x000000007dd8eff0 at chunk size 16
+[-] Remove page 12289 from order 0. Range of pages: [12289, 12289]
+[Page] Allocate 0x0000000003001000 at order 0, page 12289. Next address at order 0: 0x0000000003002000
+[Chunk] Allocate 0x0000000003001fe0 at chunk size 32
+[Chunk] Free 0x000000007dd8eff0 at chunk size 16
 [*] Buddy found! buddy idx: 515471 for page 515470 with order 0
 [+] Add page 515470 to order 0. Range of pages: [515470, 515470]
 [Page] Free 0x000000007dd8e000 and add back to order 0, page 515470. Next address at order 0: 0x000000007dd8f000
+[Chunk] Free 0x0000000003001fe0 at chunk size 32
+[*] Buddy found! buddy idx: 12288 for page 12289 with order 0
+[+] Add page 12289 to order 0. Range of pages: [12289, 12289]
+[Page] Free 0x0000000003001000 and add back to order 0, page 12289. Next address at order 0: 0x0000000003002000
+[-] Remove page 12289 from order 0. Range of pages: [12289, 12289]
+[Page] Allocate 0x0000000003001000 at order 0, page 12289. Next address at order 0: 0x0000000003002000
+[Chunk] Allocate 0x0000000003001f80 at chunk size 128
+[Chunk] Allocate 0x0000000003001f00 at chunk size 128
+[Chunk] Allocate 0x0000000003001e80 at chunk size 128
+[Chunk] Allocate 0x0000000003001e00 at chunk size 128
+[Chunk] Allocate 0x0000000003001d80 at chunk size 128
+[Chunk] Allocate 0x0000000003001d00 at chunk size 128
+[Chunk] Allocate 0x0000000003001c80 at chunk size 128
+[Chunk] Allocate 0x0000000003001c00 at chunk size 128
+[Chunk] Allocate 0x0000000003001b80 at chunk size 128
+[Chunk] Allocate 0x0000000003001b00 at chunk size 128
+[Chunk] Allocate 0x0000000003001a80 at chunk size 128
+[Chunk] Allocate 0x0000000003001a00 at chunk size 128
+[Chunk] Allocate 0x0000000003001980 at chunk size 128
+[Chunk] Allocate 0x0000000003001900 at chunk size 128
+[Chunk] Allocate 0x0000000003001880 at chunk size 128
+[Chunk] Allocate 0x0000000003001800 at chunk size 128
+[Chunk] Allocate 0x0000000003001780 at chunk size 128
+[Chunk] Allocate 0x0000000003001700 at chunk size 128
+[Chunk] Allocate 0x0000000003001680 at chunk size 128
+[Chunk] Allocate 0x0000000003001600 at chunk size 128
+[Chunk] Allocate 0x0000000003001580 at chunk size 128
+[Chunk] Allocate 0x0000000003001500 at chunk size 128
+[Chunk] Allocate 0x0000000003001480 at chunk size 128
+[Chunk] Allocate 0x0000000003001400 at chunk size 128
+[Chunk] Allocate 0x0000000003001380 at chunk size 128
+[Chunk] Allocate 0x0000000003001300 at chunk size 128
+[Chunk] Allocate 0x0000000003001280 at chunk size 128
+[Chunk] Allocate 0x0000000003001200 at chunk size 128
+[Chunk] Allocate 0x0000000003001180 at chunk size 128
+[Chunk] Allocate 0x0000000003001100 at chunk size 128
+[Chunk] Allocate 0x0000000003001080 at chunk size 128
+[Chunk] Allocate 0x0000000003001000 at chunk size 128
 [-] Remove page 515470 from order 0. Range of pages: [515470, 515470]
 [Page] Allocate 0x000000007dd8e000 at order 0, page 515470. Next address at order 0: 0x000000007dd8f000
 [Chunk] Allocate 0x000000007dd8ef80 at chunk size 128
@@ -621,82 +950,83 @@ Testing dynamic allocator...
 [Chunk] Allocate 0x000000007dd8e100 at chunk size 128
 [Chunk] Allocate 0x000000007dd8e080 at chunk size 128
 [Chunk] Allocate 0x000000007dd8e000 at chunk size 128
-[-] Remove page 137225 from order 0. Range of pages: [137225, 137225]
-[Page] Allocate 0x0000000021809000 at order 0, page 137225. Next address at order 0: 0x000000002180a000
-[Chunk] Allocate 0x0000000021809f80 at chunk size 128
-[Chunk] Allocate 0x0000000021809f00 at chunk size 128
-[Chunk] Allocate 0x0000000021809e80 at chunk size 128
-[Chunk] Allocate 0x0000000021809e00 at chunk size 128
-[Chunk] Allocate 0x0000000021809d80 at chunk size 128
-[Chunk] Allocate 0x0000000021809d00 at chunk size 128
-[Chunk] Allocate 0x0000000021809c80 at chunk size 128
-[Chunk] Allocate 0x0000000021809c00 at chunk size 128
-[Chunk] Allocate 0x0000000021809b80 at chunk size 128
-[Chunk] Allocate 0x0000000021809b00 at chunk size 128
-[Chunk] Allocate 0x0000000021809a80 at chunk size 128
-[Chunk] Allocate 0x0000000021809a00 at chunk size 128
-[Chunk] Allocate 0x0000000021809980 at chunk size 128
-[Chunk] Allocate 0x0000000021809900 at chunk size 128
-[Chunk] Allocate 0x0000000021809880 at chunk size 128
-[Chunk] Allocate 0x0000000021809800 at chunk size 128
-[Chunk] Allocate 0x0000000021809780 at chunk size 128
-[Chunk] Allocate 0x0000000021809700 at chunk size 128
-[Chunk] Allocate 0x0000000021809680 at chunk size 128
-[Chunk] Allocate 0x0000000021809600 at chunk size 128
-[Chunk] Allocate 0x0000000021809580 at chunk size 128
-[Chunk] Allocate 0x0000000021809500 at chunk size 128
-[Chunk] Allocate 0x0000000021809480 at chunk size 128
-[Chunk] Allocate 0x0000000021809400 at chunk size 128
-[Chunk] Allocate 0x0000000021809380 at chunk size 128
-[Chunk] Allocate 0x0000000021809300 at chunk size 128
-[Chunk] Allocate 0x0000000021809280 at chunk size 128
-[Chunk] Allocate 0x0000000021809200 at chunk size 128
-[Chunk] Allocate 0x0000000021809180 at chunk size 128
-[Chunk] Allocate 0x0000000021809100 at chunk size 128
-[Chunk] Allocate 0x0000000021809080 at chunk size 128
-[Chunk] Allocate 0x0000000021809000 at chunk size 128
-[-] Remove page 515469 from order 0. Range of pages: [515469, 515469]
-[Page] Allocate 0x000000007dd8d000 at order 0, page 515469. Next address at order 0: 0x000000007dd8e000
-[Chunk] Allocate 0x000000007dd8df80 at chunk size 128
-[Chunk] Allocate 0x000000007dd8df00 at chunk size 128
-[Chunk] Allocate 0x000000007dd8de80 at chunk size 128
-[Chunk] Allocate 0x000000007dd8de00 at chunk size 128
-[Chunk] Allocate 0x000000007dd8dd80 at chunk size 128
-[Chunk] Allocate 0x000000007dd8dd00 at chunk size 128
-[Chunk] Allocate 0x000000007dd8dc80 at chunk size 128
-[Chunk] Allocate 0x000000007dd8dc00 at chunk size 128
-[Chunk] Allocate 0x000000007dd8db80 at chunk size 128
-[Chunk] Allocate 0x000000007dd8db00 at chunk size 128
-[Chunk] Allocate 0x000000007dd8da80 at chunk size 128
-[Chunk] Allocate 0x000000007dd8da00 at chunk size 128
-[Chunk] Allocate 0x000000007dd8d980 at chunk size 128
-[Chunk] Allocate 0x000000007dd8d900 at chunk size 128
-[Chunk] Allocate 0x000000007dd8d880 at chunk size 128
-[Chunk] Allocate 0x000000007dd8d800 at chunk size 128
-[Chunk] Allocate 0x000000007dd8d780 at chunk size 128
-[Chunk] Allocate 0x000000007dd8d700 at chunk size 128
-[Chunk] Allocate 0x000000007dd8d680 at chunk size 128
-[Chunk] Allocate 0x000000007dd8d600 at chunk size 128
-[Chunk] Allocate 0x000000007dd8d580 at chunk size 128
-[Chunk] Allocate 0x000000007dd8d500 at chunk size 128
-[Chunk] Allocate 0x000000007dd8d480 at chunk size 128
-[Chunk] Allocate 0x000000007dd8d400 at chunk size 128
-[Chunk] Allocate 0x000000007dd8d380 at chunk size 128
-[Chunk] Allocate 0x000000007dd8d300 at chunk size 128
-[Chunk] Allocate 0x000000007dd8d280 at chunk size 128
-[Chunk] Allocate 0x000000007dd8d200 at chunk size 128
-[Chunk] Allocate 0x000000007dd8d180 at chunk size 128
-[Chunk] Allocate 0x000000007dd8d100 at chunk size 128
-[Chunk] Allocate 0x000000007dd8d080 at chunk size 128
-[Chunk] Allocate 0x000000007dd8d000 at chunk size 128
-[-] Remove page 137226 from order 1. Range of pages: [137226, 137227]
-[*] Buddy found! buddy idx: 137227 for page 137226 with order 0
-[+] Add page 137227 to order 0. Range of pages: [137227, 137227]
-[Page] Allocate 0x000000002180a000 at order 0, page 137226. Next address at order 0: 0x000000002180b000
-[Chunk] Allocate 0x000000002180af80 at chunk size 128
-[Chunk] Allocate 0x000000002180af00 at chunk size 128
-[Chunk] Allocate 0x000000002180ae80 at chunk size 128
-[Chunk] Allocate 0x000000002180ae00 at chunk size 128
+[-] Remove page 12290 from order 1. Range of pages: [12290, 12291]
+[*] Buddy found! buddy idx: 12291 for page 12290 with order 0
+[+] Add page 12291 to order 0. Range of pages: [12291, 12291]
+[Page] Allocate 0x0000000003002000 at order 0, page 12290. Next address at order 0: 0x0000000003003000
+[Chunk] Allocate 0x0000000003002f80 at chunk size 128
+[Chunk] Allocate 0x0000000003002f00 at chunk size 128
+[Chunk] Allocate 0x0000000003002e80 at chunk size 128
+[Chunk] Allocate 0x0000000003002e00 at chunk size 128
+[Chunk] Allocate 0x0000000003002d80 at chunk size 128
+[Chunk] Allocate 0x0000000003002d00 at chunk size 128
+[Chunk] Allocate 0x0000000003002c80 at chunk size 128
+[Chunk] Allocate 0x0000000003002c00 at chunk size 128
+[Chunk] Allocate 0x0000000003002b80 at chunk size 128
+[Chunk] Allocate 0x0000000003002b00 at chunk size 128
+[Chunk] Allocate 0x0000000003002a80 at chunk size 128
+[Chunk] Allocate 0x0000000003002a00 at chunk size 128
+[Chunk] Allocate 0x0000000003002980 at chunk size 128
+[Chunk] Allocate 0x0000000003002900 at chunk size 128
+[Chunk] Allocate 0x0000000003002880 at chunk size 128
+[Chunk] Allocate 0x0000000003002800 at chunk size 128
+[Chunk] Allocate 0x0000000003002780 at chunk size 128
+[Chunk] Allocate 0x0000000003002700 at chunk size 128
+[Chunk] Allocate 0x0000000003002680 at chunk size 128
+[Chunk] Allocate 0x0000000003002600 at chunk size 128
+[Chunk] Allocate 0x0000000003002580 at chunk size 128
+[Chunk] Allocate 0x0000000003002500 at chunk size 128
+[Chunk] Allocate 0x0000000003002480 at chunk size 128
+[Chunk] Allocate 0x0000000003002400 at chunk size 128
+[Chunk] Allocate 0x0000000003002380 at chunk size 128
+[Chunk] Allocate 0x0000000003002300 at chunk size 128
+[Chunk] Allocate 0x0000000003002280 at chunk size 128
+[Chunk] Allocate 0x0000000003002200 at chunk size 128
+[Chunk] Allocate 0x0000000003002180 at chunk size 128
+[Chunk] Allocate 0x0000000003002100 at chunk size 128
+[Chunk] Allocate 0x0000000003002080 at chunk size 128
+[Chunk] Allocate 0x0000000003002000 at chunk size 128
+[-] Remove page 12291 from order 0. Range of pages: [12291, 12291]
+[Page] Allocate 0x0000000003003000 at order 0, page 12291. Next address at order 0: 0x0000000003004000
+[Chunk] Allocate 0x0000000003003f80 at chunk size 128
+[Chunk] Allocate 0x0000000003003f00 at chunk size 128
+[Chunk] Allocate 0x0000000003003e80 at chunk size 128
+[Chunk] Allocate 0x0000000003003e00 at chunk size 128
+[Chunk] Free 0x0000000003001f80 at chunk size 128
+[Chunk] Free 0x0000000003001f00 at chunk size 128
+[Chunk] Free 0x0000000003001e80 at chunk size 128
+[Chunk] Free 0x0000000003001e00 at chunk size 128
+[Chunk] Free 0x0000000003001d80 at chunk size 128
+[Chunk] Free 0x0000000003001d00 at chunk size 128
+[Chunk] Free 0x0000000003001c80 at chunk size 128
+[Chunk] Free 0x0000000003001c00 at chunk size 128
+[Chunk] Free 0x0000000003001b80 at chunk size 128
+[Chunk] Free 0x0000000003001b00 at chunk size 128
+[Chunk] Free 0x0000000003001a80 at chunk size 128
+[Chunk] Free 0x0000000003001a00 at chunk size 128
+[Chunk] Free 0x0000000003001980 at chunk size 128
+[Chunk] Free 0x0000000003001900 at chunk size 128
+[Chunk] Free 0x0000000003001880 at chunk size 128
+[Chunk] Free 0x0000000003001800 at chunk size 128
+[Chunk] Free 0x0000000003001780 at chunk size 128
+[Chunk] Free 0x0000000003001700 at chunk size 128
+[Chunk] Free 0x0000000003001680 at chunk size 128
+[Chunk] Free 0x0000000003001600 at chunk size 128
+[Chunk] Free 0x0000000003001580 at chunk size 128
+[Chunk] Free 0x0000000003001500 at chunk size 128
+[Chunk] Free 0x0000000003001480 at chunk size 128
+[Chunk] Free 0x0000000003001400 at chunk size 128
+[Chunk] Free 0x0000000003001380 at chunk size 128
+[Chunk] Free 0x0000000003001300 at chunk size 128
+[Chunk] Free 0x0000000003001280 at chunk size 128
+[Chunk] Free 0x0000000003001200 at chunk size 128
+[Chunk] Free 0x0000000003001180 at chunk size 128
+[Chunk] Free 0x0000000003001100 at chunk size 128
+[Chunk] Free 0x0000000003001080 at chunk size 128
+[Chunk] Free 0x0000000003001000 at chunk size 128
+[*] Buddy found! buddy idx: 12288 for page 12289 with order 0
+[+] Add page 12289 to order 0. Range of pages: [12289, 12289]
+[Page] Free 0x0000000003001000 and add back to order 0, page 12289. Next address at order 0: 0x0000000003002000
 [Chunk] Free 0x000000007dd8ef80 at chunk size 128
 [Chunk] Free 0x000000007dd8ef00 at chunk size 128
 [Chunk] Free 0x000000007dd8ee80 at chunk size 128
@@ -732,86 +1062,52 @@ Testing dynamic allocator...
 [*] Buddy found! buddy idx: 515471 for page 515470 with order 0
 [+] Add page 515470 to order 0. Range of pages: [515470, 515470]
 [Page] Free 0x000000007dd8e000 and add back to order 0, page 515470. Next address at order 0: 0x000000007dd8f000
-[Chunk] Free 0x0000000021809f80 at chunk size 128
-[Chunk] Free 0x0000000021809f00 at chunk size 128
-[Chunk] Free 0x0000000021809e80 at chunk size 128
-[Chunk] Free 0x0000000021809e00 at chunk size 128
-[Chunk] Free 0x0000000021809d80 at chunk size 128
-[Chunk] Free 0x0000000021809d00 at chunk size 128
-[Chunk] Free 0x0000000021809c80 at chunk size 128
-[Chunk] Free 0x0000000021809c00 at chunk size 128
-[Chunk] Free 0x0000000021809b80 at chunk size 128
-[Chunk] Free 0x0000000021809b00 at chunk size 128
-[Chunk] Free 0x0000000021809a80 at chunk size 128
-[Chunk] Free 0x0000000021809a00 at chunk size 128
-[Chunk] Free 0x0000000021809980 at chunk size 128
-[Chunk] Free 0x0000000021809900 at chunk size 128
-[Chunk] Free 0x0000000021809880 at chunk size 128
-[Chunk] Free 0x0000000021809800 at chunk size 128
-[Chunk] Free 0x0000000021809780 at chunk size 128
-[Chunk] Free 0x0000000021809700 at chunk size 128
-[Chunk] Free 0x0000000021809680 at chunk size 128
-[Chunk] Free 0x0000000021809600 at chunk size 128
-[Chunk] Free 0x0000000021809580 at chunk size 128
-[Chunk] Free 0x0000000021809500 at chunk size 128
-[Chunk] Free 0x0000000021809480 at chunk size 128
-[Chunk] Free 0x0000000021809400 at chunk size 128
-[Chunk] Free 0x0000000021809380 at chunk size 128
-[Chunk] Free 0x0000000021809300 at chunk size 128
-[Chunk] Free 0x0000000021809280 at chunk size 128
-[Chunk] Free 0x0000000021809200 at chunk size 128
-[Chunk] Free 0x0000000021809180 at chunk size 128
-[Chunk] Free 0x0000000021809100 at chunk size 128
-[Chunk] Free 0x0000000021809080 at chunk size 128
-[Chunk] Free 0x0000000021809000 at chunk size 128
-[*] Buddy found! buddy idx: 137224 for page 137225 with order 0
-[+] Add page 137225 to order 0. Range of pages: [137225, 137225]
-[Page] Free 0x0000000021809000 and add back to order 0, page 137225. Next address at order 0: 0x000000002180a000
-[Chunk] Free 0x000000007dd8df80 at chunk size 128
-[Chunk] Free 0x000000007dd8df00 at chunk size 128
-[Chunk] Free 0x000000007dd8de80 at chunk size 128
-[Chunk] Free 0x000000007dd8de00 at chunk size 128
-[Chunk] Free 0x000000007dd8dd80 at chunk size 128
-[Chunk] Free 0x000000007dd8dd00 at chunk size 128
-[Chunk] Free 0x000000007dd8dc80 at chunk size 128
-[Chunk] Free 0x000000007dd8dc00 at chunk size 128
-[Chunk] Free 0x000000007dd8db80 at chunk size 128
-[Chunk] Free 0x000000007dd8db00 at chunk size 128
-[Chunk] Free 0x000000007dd8da80 at chunk size 128
-[Chunk] Free 0x000000007dd8da00 at chunk size 128
-[Chunk] Free 0x000000007dd8d980 at chunk size 128
-[Chunk] Free 0x000000007dd8d900 at chunk size 128
-[Chunk] Free 0x000000007dd8d880 at chunk size 128
-[Chunk] Free 0x000000007dd8d800 at chunk size 128
-[Chunk] Free 0x000000007dd8d780 at chunk size 128
-[Chunk] Free 0x000000007dd8d700 at chunk size 128
-[Chunk] Free 0x000000007dd8d680 at chunk size 128
-[Chunk] Free 0x000000007dd8d600 at chunk size 128
-[Chunk] Free 0x000000007dd8d580 at chunk size 128
-[Chunk] Free 0x000000007dd8d500 at chunk size 128
-[Chunk] Free 0x000000007dd8d480 at chunk size 128
-[Chunk] Free 0x000000007dd8d400 at chunk size 128
-[Chunk] Free 0x000000007dd8d380 at chunk size 128
-[Chunk] Free 0x000000007dd8d300 at chunk size 128
-[Chunk] Free 0x000000007dd8d280 at chunk size 128
-[Chunk] Free 0x000000007dd8d200 at chunk size 128
-[Chunk] Free 0x000000007dd8d180 at chunk size 128
-[Chunk] Free 0x000000007dd8d100 at chunk size 128
-[Chunk] Free 0x000000007dd8d080 at chunk size 128
-[Chunk] Free 0x000000007dd8d000 at chunk size 128
-[*] Buddy found! buddy idx: 515468 for page 515469 with order 0
-[+] Add page 515469 to order 0. Range of pages: [515469, 515469]
-[Page] Free 0x000000007dd8d000 and add back to order 0, page 515469. Next address at order 0: 0x000000007dd8e000
-[Chunk] Free 0x000000002180af80 at chunk size 128
-[Chunk] Free 0x000000002180af00 at chunk size 128
-[Chunk] Free 0x000000002180ae80 at chunk size 128
-[Chunk] Free 0x000000002180ae00 at chunk size 128
-[*] Buddy found! buddy idx: 137227 for page 137226 with order 0
-[-] Remove page 137227 from order 0. Range of pages: [137227, 137227]
-[*] Buddy found! buddy idx: 137224 for page 137226 with order 1
-[+] Add page 137226 to order 1. Range of pages: [137226, 137227]
-[Page] Free 0x000000002180a000 and add back to order 1, page 137226. Next address at order 1: 0x000000002180c000
+[Chunk] Free 0x0000000003002f80 at chunk size 128
+[Chunk] Free 0x0000000003002f00 at chunk size 128
+[Chunk] Free 0x0000000003002e80 at chunk size 128
+[Chunk] Free 0x0000000003002e00 at chunk size 128
+[Chunk] Free 0x0000000003002d80 at chunk size 128
+[Chunk] Free 0x0000000003002d00 at chunk size 128
+[Chunk] Free 0x0000000003002c80 at chunk size 128
+[Chunk] Free 0x0000000003002c00 at chunk size 128
+[Chunk] Free 0x0000000003002b80 at chunk size 128
+[Chunk] Free 0x0000000003002b00 at chunk size 128
+[Chunk] Free 0x0000000003002a80 at chunk size 128
+[Chunk] Free 0x0000000003002a00 at chunk size 128
+[Chunk] Free 0x0000000003002980 at chunk size 128
+[Chunk] Free 0x0000000003002900 at chunk size 128
+[Chunk] Free 0x0000000003002880 at chunk size 128
+[Chunk] Free 0x0000000003002800 at chunk size 128
+[Chunk] Free 0x0000000003002780 at chunk size 128
+[Chunk] Free 0x0000000003002700 at chunk size 128
+[Chunk] Free 0x0000000003002680 at chunk size 128
+[Chunk] Free 0x0000000003002600 at chunk size 128
+[Chunk] Free 0x0000000003002580 at chunk size 128
+[Chunk] Free 0x0000000003002500 at chunk size 128
+[Chunk] Free 0x0000000003002480 at chunk size 128
+[Chunk] Free 0x0000000003002400 at chunk size 128
+[Chunk] Free 0x0000000003002380 at chunk size 128
+[Chunk] Free 0x0000000003002300 at chunk size 128
+[Chunk] Free 0x0000000003002280 at chunk size 128
+[Chunk] Free 0x0000000003002200 at chunk size 128
+[Chunk] Free 0x0000000003002180 at chunk size 128
+[Chunk] Free 0x0000000003002100 at chunk size 128
+[Chunk] Free 0x0000000003002080 at chunk size 128
+[Chunk] Free 0x0000000003002000 at chunk size 128
+[*] Buddy found! buddy idx: 12291 for page 12290 with order 0
+[+] Add page 12290 to order 0. Range of pages: [12290, 12290]
+[Page] Free 0x0000000003002000 and add back to order 0, page 12290. Next address at order 0: 0x0000000003003000
+[Chunk] Free 0x0000000003003f80 at chunk size 128
+[Chunk] Free 0x0000000003003f00 at chunk size 128
+[Chunk] Free 0x0000000003003e80 at chunk size 128
+[Chunk] Free 0x0000000003003e00 at chunk size 128
+[*] Buddy found! buddy idx: 12290 for page 12291 with order 0
+[-] Remove page 12290 from order 0. Range of pages: [12290, 12290]
+[*] Buddy found! buddy idx: 12288 for page 12290 with order 1
+[+] Add page 12290 to order 1. Range of pages: [12290, 12291]
+[Page] Free 0x0000000003002000 and add back to order 1, page 12290. Next address at order 1: 0x0000000003004000
 Allocation failed as expected for size > MAX_ALLOC_SIZE
+
 opi-rv2> 
 Terminating...
 Thanks for using picocom

@@ -35,7 +35,7 @@ void uart_write_reg(int off, unsigned int val) {
         *(volatile unsigned char *)UART_REG(off) = val;
 }
 
-char uart_getc(void) {
+char uart_getc_polling(void) {
     while ((uart_read_reg(UART_LSR) & LSR_DR) == 0)
         ;
 
@@ -43,9 +43,9 @@ char uart_getc(void) {
     return c == '\r' ? '\n' : c;
 }
 
-void uart_putc(char c) {
+void uart_putc_polling(char c) {
     if (c == '\n')
-        uart_putc('\r');
+        uart_putc_polling('\r');
 
     while ((uart_read_reg(UART_LSR) & LSR_TDRQ) == 0)
         ;
@@ -53,10 +53,16 @@ void uart_putc(char c) {
     uart_write_reg(UART_THR, (unsigned int)c);
 }
 
-void uart_puts(const char *s) {
+void uart_puts_polling(const char *s) {
     while (*s)
-        uart_putc(*s++);
+        uart_putc_polling(*s++);
 }
+
+/* Public UART console API is implemented in main.c as async wrappers.
+ * Keep these prototypes so helper functions below use the async path. */
+extern char uart_getc(void);
+extern void uart_putc(char c);
+extern void uart_puts(const char *s);
 
 void uart_hex(unsigned long h) {
     uart_puts("0x");

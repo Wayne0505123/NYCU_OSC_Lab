@@ -2,9 +2,40 @@
 #include <stdint.h>
 #include <stddef.h>
 
+#define MM_BOOT_LOG 1
+
 extern void uart_puts(const char *s);
 extern void uart_hex(unsigned long h);
 extern void uart_putc(char c);
+
+extern unsigned int uart_read_reg(int off);
+extern void uart_write_reg(int off, unsigned int val);
+
+#define UART_THR 0
+#define UART_LSR 5
+#define UART_LSR_THRE (1 << 5)
+
+static void mm_debug_putc(char c) {
+    unsigned long timeout = 100000;
+
+    while (!(uart_read_reg(UART_LSR) & UART_LSR_THRE)) {
+        if (--timeout == 0)
+            return;
+    }
+
+    uart_write_reg(UART_THR, (unsigned char)c);
+}
+
+static void mm_debug_hex(unsigned long x) {
+    const char *hex = "0123456789abcdef";
+
+    mm_debug_putc('0');
+    mm_debug_putc('x');
+
+    for (int i = (int)(sizeof(unsigned long) * 2) - 1; i >= 0; i--) {
+        mm_debug_putc(hex[(x >> (i * 4)) & 0xf]);
+    }
+}
 
 extern int fdt_path_offset(const void *fdt, const char *path);
 extern const void *fdt_getprop(const void *fdt,
@@ -18,7 +49,7 @@ extern char _end[];
 #define PAGE_FREE_IN_BLOCK -1
 #define PAGE_ALLOCATED     -2
 
-#define CHUNK_CLASS_COUNT 4
+#define CHUNK_CLASS_COUNT 8
 #define MAX_RESERVED 64
 
 #define FDT_BEGIN_NODE 0x00000001
@@ -77,11 +108,10 @@ static int reserved_count = 0;
 
 static unsigned long startup_ptr;
 
-/* 避免初始化時印出 2000+ 行 Add page log */
-static int mm_log_enabled = 1;
+static int mm_log_enabled = 0;
 
 static const unsigned long chunk_sizes[CHUNK_CLASS_COUNT] = {
-    16, 32, 64, 128
+    16, 32, 64, 128, 256, 512, 1024, 2048
 };
 
 /* ---------- Basic helpers ---------- */
@@ -227,11 +257,13 @@ static void add_reserved(unsigned long start, unsigned long size) {
     reserved[reserved_count].start = align_down_ul(start, PAGE_SIZE);
     reserved[reserved_count].end = align_up_ul(end, PAGE_SIZE);
 
+#if MM_BOOT_LOG
     uart_puts("[Reserve] Add reserved range [");
     uart_hex(reserved[reserved_count].start);
     uart_puts(", ");
     uart_hex(reserved[reserved_count].end);
     uart_puts(")\n");
+#endif
 
     reserved_count++;
 }
@@ -245,6 +277,145 @@ static int overlap_reserved(unsigned long start, unsigned long end) {
     return 0;
 }
 
+static void sort_reserved_ranges(void) {
+    for (int i = 1; i < reserved_count; i++) {
+        struct reserved_range key = reserved[i];
+        int j = i - 1;
+
+        while (j >= 0 && reserved[j].start > key.start) {
+            reserved[j + 1] = reserved[j];
+            j--;
+        }
+
+        reserved[j + 1] = key;
+    }
+}
+
+static void normalize_reserved_ranges(void) {
+    unsigned long mem_end = mem_base + mem_size;
+    int out = 0;
+
+    for (int i = 0; i < reserved_count; i++) {
+        unsigned long start = reserved[i].start;
+        unsigned long end = reserved[i].end;
+
+        if (end <= mem_base || start >= mem_end)
+            continue;
+
+        if (start < mem_base)
+            start = mem_base;
+        if (end > mem_end)
+            end = mem_end;
+
+        start = align_down_ul(start, PAGE_SIZE);
+        end = align_up_ul(end, PAGE_SIZE);
+
+        if (start < mem_base)
+            start = mem_base;
+        if (end > mem_end)
+            end = mem_end;
+
+        if (end <= start)
+            continue;
+
+        reserved[out].start = start;
+        reserved[out].end = end;
+        out++;
+    }
+
+    reserved_count = out;
+
+    if (reserved_count == 0)
+        return;
+
+    sort_reserved_ranges();
+
+    out = 0;
+    for (int i = 0; i < reserved_count; i++) {
+        if (out == 0) {
+            reserved[out++] = reserved[i];
+            continue;
+        }
+
+        if (reserved[i].start <= reserved[out - 1].end) {
+            if (reserved[i].end > reserved[out - 1].end)
+                reserved[out - 1].end = reserved[i].end;
+        } else {
+            reserved[out++] = reserved[i];
+        }
+    }
+
+    reserved_count = out;
+}
+
+static void add_free_block(unsigned long pfn, unsigned int order) {
+    if (pfn >= num_pages)
+        return;
+
+    if (order > MAX_ORDER)
+        return;
+
+    if (pfn + (1UL << order) > num_pages)
+        return;
+
+    struct page *p = &mem_map[pfn];
+
+    p->order = order;
+    p->refcount = 0;
+    p->next = 0;
+    p->prev = 0;
+
+    list_add(&free_area[order], p);
+}
+
+static void add_free_range(unsigned long start, unsigned long end) {
+    unsigned long phys_end = mem_base + mem_size;
+
+    if (end <= mem_base || start >= phys_end)
+        return;
+
+    if (start < mem_base)
+        start = mem_base;
+
+    if (end > phys_end)
+        end = phys_end;
+
+    start = align_up_ul(start, PAGE_SIZE);
+    end = align_down_ul(end, PAGE_SIZE);
+
+    if (end <= start)
+        return;
+
+    unsigned long pfn = (start - mem_base) / PAGE_SIZE;
+    unsigned long end_pfn = (end - mem_base) / PAGE_SIZE;
+
+    unsigned long guard = 0;
+
+    while (pfn < end_pfn) {
+        if (++guard > num_pages + 1024) {
+            
+            return;
+        }
+
+        unsigned int order = 0;
+
+        while (order < MAX_ORDER) {
+            unsigned long next_pages = 1UL << (order + 1);
+
+            if ((pfn & (next_pages - 1)) != 0)
+                break;
+
+            if (pfn + next_pages > end_pfn)
+                break;
+
+            order++;
+        }
+
+        add_free_block(pfn, order);
+        pfn += 1UL << order;
+    }
+}
+
 /* ---------- Startup allocator ---------- */
 
 static void *startup_alloc(unsigned long size, unsigned long align) {
@@ -255,11 +426,13 @@ static void *startup_alloc(unsigned long size, unsigned long align) {
             startup_ptr = p + size;
             add_reserved(p, size);
 
+#if MM_BOOT_LOG
             uart_puts("[Startup] Allocate ");
             uart_hex(p);
             uart_puts(" size ");
             uart_hex(size);
             uart_puts("\n");
+#endif
 
             return (void *)p;
         }
@@ -313,33 +486,41 @@ static void parse_memory_region(const void *fdt) {
     mem_size = read_cells(prop + addr_cells, size_cells);
     num_pages = mem_size / PAGE_SIZE;
 
-    uart_puts("[MM] memory base = ");
-    uart_hex(mem_base);
-    uart_puts("\n");
+    #if MM_BOOT_LOG
+	uart_puts("[MM] memory base = ");
+	uart_hex(mem_base);
+	uart_puts("\n");
 
-    uart_puts("[MM] memory size = ");
-    uart_hex(mem_size);
-    uart_puts("\n");
+	uart_puts("[MM] memory size = ");
+	uart_hex(mem_size);
+	uart_puts("\n");
 
-    uart_puts("[MM] num pages = ");
-    print_dec(num_pages);
-    uart_puts("\n");
+	uart_puts("[MM] num pages = ");
+	print_dec(num_pages);
+	uart_puts("\n");
+	#endif
+}
+
+static unsigned long read_be64_cells(const uint32_t *p) {
+    unsigned long hi = bswap32_mm(p[0]);
+    unsigned long lo = bswap32_mm(p[1]);
+    return (hi << 32) | lo;
 }
 
 static void parse_fdt_reserve_map(const void *fdt) {
     const struct fdt_header_mm *hdr = (const struct fdt_header_mm *)fdt;
-    const unsigned long *p =
-        (const unsigned long *)((const char *)fdt + bswap32_mm(hdr->off_mem_rsvmap));
+    const uint32_t *p =
+        (const uint32_t *)((const char *)fdt + bswap32_mm(hdr->off_mem_rsvmap));
 
     while (1) {
-        unsigned long addr = bswap64_mm(p[0]);
-        unsigned long size = bswap64_mm(p[1]);
+        unsigned long addr = read_be64_cells(p);
+        unsigned long size = read_be64_cells(p + 2);
 
         if (addr == 0 && size == 0)
             break;
 
         add_reserved(addr, size);
-        p += 2;
+        p += 4;
     }
 }
 
@@ -548,7 +729,7 @@ static void free_pages_internal(struct page *p) {
     }
 }
 
-static void memory_reserve(unsigned long start, unsigned long size) {
+static void __attribute__((unused)) memory_reserve(unsigned long start, unsigned long size) {
     if (size == 0)
         return;
 
@@ -566,6 +747,7 @@ static void memory_reserve(unsigned long start, unsigned long size) {
     unsigned long start_pfn = (start - mem_base) / PAGE_SIZE;
     unsigned long end_pfn = align_up_ul(end - mem_base, PAGE_SIZE) / PAGE_SIZE;
 
+#if MM_BOOT_LOG
     uart_puts("[Reserve] Reserve address [");
     uart_hex(start);
     uart_puts(", ");
@@ -575,6 +757,7 @@ static void memory_reserve(unsigned long start, unsigned long size) {
     uart_puts(", ");
     print_dec(end_pfn);
     uart_puts(")\n");
+#endif
 
     for (int order = MAX_ORDER; order >= 0; order--) {
         struct page *p = free_area[order];
@@ -715,11 +898,13 @@ static void *alloc_chunk(size_t size) {
     if (chunk_info[owner_idx].free_chunks > 0)
         chunk_info[owner_idx].free_chunks--;
 
-    uart_puts("[Chunk] Allocate ");
-    uart_hex((unsigned long)c);
-    uart_puts(" at chunk size ");
-    print_dec(chunk_size);
-    uart_puts("\n");
+    if (mm_log_enabled) {
+        uart_puts("[Chunk] Allocate ");
+        uart_hex((unsigned long)c);
+        uart_puts(" at chunk size ");
+        print_dec(chunk_size);
+        uart_puts("\n");
+    }
 
     return c;
 }
@@ -745,11 +930,13 @@ static void free_chunk(void *ptr) {
 
     chunk_info[idx].free_chunks++;
 
-    uart_puts("[Chunk] Free ");
-    uart_hex(addr);
-    uart_puts(" at chunk size ");
-    print_dec(chunk_size);
-    uart_puts("\n");
+    if (mm_log_enabled) {
+        uart_puts("[Chunk] Free ");
+        uart_hex(addr);
+        uart_puts(" at chunk size ");
+        print_dec(chunk_size);
+        uart_puts("\n");
+    }
 
     if (chunk_info[idx].free_chunks == chunk_info[idx].total_chunks) {
         remove_page_chunks_from_freelist(page_base, class_id);
@@ -764,7 +951,7 @@ void *allocate(size_t size) {
     if (size == 0 || size > MAX_ALLOC_SIZE)
         return 0;
 
-    if (size <= 128)
+    if (size <= chunk_sizes[CHUNK_CLASS_COUNT - 1])
         return alloc_chunk(size);
 
     unsigned int order = size_to_order(size);
@@ -805,79 +992,96 @@ void mm_init_advanced(const void *fdt,
     const struct fdt_header_mm *hdr = (const struct fdt_header_mm *)fdt;
 
     reserved_count = 0;
+    mm_log_enabled = 1;
 
     parse_memory_region(fdt);
 
-    add_reserved((unsigned long)fdt, bswap32_mm(hdr->totalsize));
-    parse_fdt_reserve_map(fdt);
-    parse_reserved_memory_node(fdt);
+	add_reserved((unsigned long)fdt, bswap32_mm(hdr->totalsize));
+	
+	parse_fdt_reserve_map(fdt);
+	
 
-    add_reserved((unsigned long)_start,
-                 (unsigned long)_end - (unsigned long)_start);
+	parse_reserved_memory_node(fdt);
+	
 
-    if (initrd_start_addr && initrd_end_addr > initrd_start_addr) {
-        add_reserved(initrd_start_addr,
-                     initrd_end_addr - initrd_start_addr);
-    }
+	#define KERNEL_STACK_RESERVE_SIZE (128 * 1024UL)
 
-    startup_ptr = align_up_ul((unsigned long)_end, PAGE_SIZE);
+	unsigned long kernel_start = (unsigned long)_start;
+	unsigned long kernel_end = (unsigned long)_end;
 
-    while (overlap_reserved(startup_ptr, startup_ptr + PAGE_SIZE)) {
-        startup_ptr += PAGE_SIZE;
-    }
+	add_reserved(kernel_start, kernel_end - kernel_start);
+	add_reserved(kernel_end, KERNEL_STACK_RESERVE_SIZE);
 
-    unsigned long mem_map_size =
-        num_pages * sizeof(struct page);
+	if (initrd_start_addr && initrd_end_addr > initrd_start_addr) {
+		add_reserved(initrd_start_addr,
+		             initrd_end_addr - initrd_start_addr);
+	}
 
-    unsigned long chunk_info_size =
-        num_pages * sizeof(struct page_chunk_info);
+	startup_ptr = align_up_ul((unsigned long)_end, PAGE_SIZE);
 
-    mem_map = (struct page *)startup_alloc(mem_map_size, PAGE_SIZE);
-    chunk_info = (struct page_chunk_info *)startup_alloc(chunk_info_size, PAGE_SIZE);
+	while (overlap_reserved(startup_ptr, startup_ptr + PAGE_SIZE)) {
+		startup_ptr += PAGE_SIZE;
+	}
+	
 
-    if (!mem_map || !chunk_info) {
-        uart_puts("[MM] startup allocation failed\n");
-        return;
-    }
+	unsigned long mem_map_size = num_pages * sizeof(struct page);
+	unsigned long chunk_info_size = num_pages * sizeof(struct page_chunk_info);
+	
 
-    for (unsigned long i = 0; i < num_pages; i++) {
-        mem_map[i].order = PAGE_FREE_IN_BLOCK;
-        mem_map[i].refcount = 0;
-        mem_map[i].next = 0;
-        mem_map[i].prev = 0;
+	mem_map = (struct page *)startup_alloc(mem_map_size, PAGE_SIZE);
 
-        chunk_info[i].chunk_size = 0;
-        chunk_info[i].total_chunks = 0;
-        chunk_info[i].free_chunks = 0;
-    }
 
-    for (int i = 0; i <= MAX_ORDER; i++)
-        free_area[i] = 0;
+	chunk_info = (struct page_chunk_info *)startup_alloc(chunk_info_size, PAGE_SIZE);
+	
 
-    for (int i = 0; i < CHUNK_CLASS_COUNT; i++)
-        chunk_free_list[i] = 0;
+	if (!mem_map || !chunk_info) {
+		return;
+	}
+	
 
-    mm_log_enabled = 0;
+	for (unsigned long i = 0; i < num_pages; i++) {
+		mem_map[i].order = PAGE_ALLOCATED;
+		mem_map[i].refcount = 1;
+		mem_map[i].next = 0;
+		mem_map[i].prev = 0;
 
-    for (unsigned long i = 0;
-         i + (1UL << MAX_ORDER) <= num_pages;
-         i += (1UL << MAX_ORDER)) {
-        mem_map[i].order = MAX_ORDER;
-        mem_map[i].refcount = 0;
-        list_add(&free_area[MAX_ORDER], &mem_map[i]);
-    }
+		chunk_info[i].chunk_size = 0;
+		chunk_info[i].total_chunks = 0;
+		chunk_info[i].free_chunks = 0;
+	}
+	
+	for (int i = 0; i <= MAX_ORDER; i++)
+		free_area[i] = 0;
 
-    mm_log_enabled = 1;
+	for (int i = 0; i < CHUNK_CLASS_COUNT; i++)
+		chunk_free_list[i] = 0;
 
-    for (int i = 0; i < reserved_count; i++) {
-        memory_reserve(reserved[i].start,
-                       reserved[i].end - reserved[i].start);
-    }
+	normalize_reserved_ranges();
 
-    uart_puts("[MM] advanced init done\n");
+	unsigned long cursor = mem_base;
+	unsigned long mem_end = mem_base + mem_size;
+
+	for (int i = 0; i < reserved_count; i++) {
+		if (reserved[i].end <= cursor)
+		    continue;
+
+		if (reserved[i].start > cursor)
+		    add_free_range(cursor, reserved[i].start);
+
+		if (reserved[i].end > cursor)
+		    cursor = reserved[i].end;
+	}
+
+	if (cursor < mem_end)
+		add_free_range(cursor, mem_end);
+
+	mm_log_enabled = 0;
 }
 
+
+
 void test_alloc_1(void) {
+    mm_log_enabled = 1;
     uart_puts("Testing memory allocation...\n");
 
     char *ptr1 = (char *)allocate(4000);
@@ -896,11 +1100,19 @@ void test_alloc_1(void) {
     char *kmem_ptr2 = (char *)allocate(32);
     char *kmem_ptr3 = (char *)allocate(64);
     char *kmem_ptr4 = (char *)allocate(128);
+    char *kmem_ptr4_1 = (char *)allocate(256);
+    char *kmem_ptr4_2 = (char *)allocate(512);
+    char *kmem_ptr4_3 = (char *)allocate(1024);
+    char *kmem_ptr4_4 = (char *)allocate(2048);
 
     free(kmem_ptr1);
     free(kmem_ptr2);
     free(kmem_ptr3);
     free(kmem_ptr4);
+    free(kmem_ptr4_1);
+    free(kmem_ptr4_2);
+    free(kmem_ptr4_3);
+    free(kmem_ptr4_4);
 
     char *kmem_ptr5 = (char *)allocate(16);
     char *kmem_ptr6 = (char *)allocate(32);
@@ -924,4 +1136,6 @@ void test_alloc_1(void) {
         uart_puts("Unexpected allocation success for size > MAX_ALLOC_SIZE\n");
         free(kmem_ptr7);
     }
+
+    mm_log_enabled = 0;
 }
