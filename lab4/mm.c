@@ -9,35 +9,6 @@ extern void uart_puts(const char *s);
 extern void uart_hex(unsigned long h);
 extern void uart_putc(char c);
 
-extern unsigned int uart_read_reg(int off);
-extern void uart_write_reg(int off, unsigned int val);
-
-#define UART_THR 0
-#define UART_LSR 5
-#define UART_LSR_THRE (1 << 5)
-
-static void mm_debug_putc(char c) {
-    unsigned long timeout = 100000;
-
-    while (!(uart_read_reg(UART_LSR) & UART_LSR_THRE)) {
-        if (--timeout == 0)
-            return;
-    }
-
-    uart_write_reg(UART_THR, (unsigned char)c);
-}
-
-static void mm_debug_hex(unsigned long x) {
-    const char *hex = "0123456789abcdef";
-
-    mm_debug_putc('0');
-    mm_debug_putc('x');
-
-    for (int i = (int)(sizeof(unsigned long) * 2) - 1; i >= 0; i--) {
-        mm_debug_putc(hex[(x >> (i * 4)) & 0xf]);
-    }
-}
-
 extern int fdt_path_offset(const void *fdt, const char *path);
 extern const void *fdt_getprop(const void *fdt,
                                int nodeoffset,
@@ -122,17 +93,6 @@ static unsigned int bswap32_mm(unsigned int x) {
            ((x & 0x0000ff00U) << 8)  |
            ((x & 0x00ff0000U) >> 8)  |
            ((x & 0xff000000U) >> 24);
-}
-
-static unsigned long bswap64_mm(unsigned long x) {
-    return ((x & 0x00000000000000ffUL) << 56) |
-           ((x & 0x000000000000ff00UL) << 40) |
-           ((x & 0x0000000000ff0000UL) << 24) |
-           ((x & 0x00000000ff000000UL) << 8)  |
-           ((x & 0x000000ff00000000UL) >> 8)  |
-           ((x & 0x0000ff0000000000UL) >> 24) |
-           ((x & 0x00ff000000000000UL) >> 40) |
-           ((x & 0xff00000000000000UL) >> 56);
 }
 
 static unsigned long align_up_ul(unsigned long x, unsigned long a) {
@@ -727,92 +687,6 @@ static void free_pages_internal(struct page *p) {
         uart_puts(": ");
         uart_hex(page_addr(p) + (PAGE_SIZE << order));
         uart_puts("\n");
-    }
-}
-
-static void __attribute__((unused)) memory_reserve(unsigned long start, unsigned long size) {
-    if (size == 0)
-        return;
-
-    unsigned long end = start + size;
-
-    if (end <= mem_base || start >= mem_base + mem_size)
-        return;
-
-    if (start < mem_base)
-        start = mem_base;
-
-    if (end > mem_base + mem_size)
-        end = mem_base + mem_size;
-
-    unsigned long start_pfn = (start - mem_base) / PAGE_SIZE;
-    unsigned long end_pfn = align_up_ul(end - mem_base, PAGE_SIZE) / PAGE_SIZE;
-
-#if MM_BOOT_LOG
-    uart_puts("[Reserve] Reserve address [");
-    uart_hex(start);
-    uart_puts(", ");
-    uart_hex(end);
-    uart_puts("). Range of pages: [");
-    print_dec(start_pfn);
-    uart_puts(", ");
-    print_dec(end_pfn);
-    uart_puts(")\n");
-#endif
-
-    for (int order = MAX_ORDER; order >= 0; order--) {
-        struct page *p = free_area[order];
-
-        while (p) {
-            struct page *next = p->next;
-
-            unsigned long pfn = page_idx(p);
-            unsigned long block_start = pfn;
-            unsigned long block_end = pfn + (1UL << order);
-
-            if (block_end <= start_pfn || block_start >= end_pfn) {
-                p = next;
-                continue;
-            }
-
-            list_remove(&free_area[order], p);
-
-            if (block_start >= start_pfn && block_end <= end_pfn) {
-                p->refcount = 1;
-                p->order = PAGE_ALLOCATED;
-                p->next = 0;
-                p->prev = 0;
-                p = next;
-                continue;
-            }
-
-            if (order == 0) {
-                p->refcount = 1;
-                p->order = PAGE_ALLOCATED;
-                p->next = 0;
-                p->prev = 0;
-                p = next;
-                continue;
-            }
-
-            int next_order = order - 1;
-            struct page *buddy = &mem_map[pfn + (1UL << next_order)];
-
-            p->order = next_order;
-            p->refcount = 0;
-            p->next = 0;
-            p->prev = 0;
-
-            buddy->order = next_order;
-            buddy->refcount = 0;
-            buddy->next = 0;
-            buddy->prev = 0;
-
-            list_add(&free_area[next_order], p);
-            list_add(&free_area[next_order], buddy);
-
-            p = next;
-        }
     }
 }
 
