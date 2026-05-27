@@ -1,0 +1,14 @@
+mm.c
+	MM_BOOT_LOG=1 -> open memory base/size、reserved range、startup allocator log
+	mm_log_enabled=1 -> open mem allocation log (in  mm_init_advanced()、test_alloc_1()) 
+	
+
+main.c -> start_kernel():
+	remark below codes -> close core timer interrupt                   
+	
+	add_task(boot_time_task, (void *)0, 2);
+	timer_boot_log_enabled = 1;	
+	
+
+	
+vncviewer 127.0.0.1:5900 -> watch video
