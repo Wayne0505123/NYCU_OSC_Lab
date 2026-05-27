@@ -1239,8 +1239,11 @@ static unsigned long task_ticks_per_sec(void)
     return timebase_frequency ? timebase_frequency : 10000000UL;
 }
 
-static void enqueue_task(struct task_struct *task)
+static void enqueue_task_locked(struct task_struct *task)
 {
+    if (!task)
+        return;
+
     if (!run_queue)
     {
         run_queue = task;
@@ -1256,7 +1259,16 @@ static void enqueue_task(struct task_struct *task)
     task->next = run_queue;
 }
 
-static void remove_task_from_queue(struct task_struct *task)
+static void enqueue_task(struct task_struct *task)
+{
+    unsigned long flags = irq_save();
+
+    enqueue_task_locked(task);
+
+    irq_restore(flags);
+}
+
+static void remove_task_from_queue_locked(struct task_struct *task)
 {
     if (!run_queue || !task)
         return;
@@ -1282,7 +1294,7 @@ static void remove_task_from_queue(struct task_struct *task)
     task->next = 0;
 }
 
-static struct task_struct *find_task(int pid)
+static struct task_struct *find_task_locked(int pid)
 {
     if (!run_queue)
         return 0;
@@ -1298,7 +1310,17 @@ static struct task_struct *find_task(int pid)
     return 0;
 }
 
-static int task_has_child(struct task_struct *parent, long pid)
+static int task_is_alive(int pid)
+{
+    unsigned long flags = irq_save();
+    struct task_struct *task = find_task_locked(pid);
+    int alive = task && task->state != TASK_ZOMBIE;
+
+    irq_restore(flags);
+    return alive;
+}
+
+static int task_has_child_locked(struct task_struct *parent, long pid)
 {
     if (!run_queue)
         return 0;
@@ -1314,13 +1336,8 @@ static int task_has_child(struct task_struct *parent, long pid)
     return 0;
 }
 
-static void release_task(struct task_struct *task)
+static void free_task_storage(struct task_struct *task)
 {
-    if (!task || task == &boot_task || task == get_current())
-        return;
-
-    remove_task_from_queue(task);
-
     if (task->signal_stack)
         free(task->signal_stack);
     if (task->user_stack)
@@ -1331,7 +1348,7 @@ static void release_task(struct task_struct *task)
     free(task);
 }
 
-static void wake_waiters(int pid)
+static void wake_waiters_locked(int pid)
 {
     if (!run_queue)
         return;
@@ -1348,14 +1365,23 @@ static void wake_waiters(int pid)
     } while (cur != run_queue);
 }
 
-static void mark_task_zombie(struct task_struct *task, int status)
+static void mark_task_zombie_locked(struct task_struct *task, int status)
 {
     if (!task || task->state == TASK_ZOMBIE)
         return;
 
     task->exit_status = status;
     task->state = TASK_ZOMBIE;
-    wake_waiters(task->pid);
+    wake_waiters_locked(task->pid);
+}
+
+static void mark_task_zombie(struct task_struct *task, int status)
+{
+    unsigned long flags = irq_save();
+
+    mark_task_zombie_locked(task, status);
+
+    irq_restore(flags);
 }
 
 static struct task_struct *pick_next_task(struct task_struct *prev)
@@ -1378,27 +1404,27 @@ static struct task_struct *pick_next_task(struct task_struct *prev)
 
 static void schedule(void)
 {
+    unsigned long flags = irq_save();
+
     if (!scheduler_ready || !run_queue)
+    {
+        irq_restore(flags);
         return;
+    }
 
     struct task_struct *prev = get_current();
     struct task_struct *next = pick_next_task(prev);
 
     if (!next || next == prev)
+    {
+        irq_restore(flags);
         return;
+    }
 
-    irq_save();
     current_task = next;
     switch_to(prev, next);
 
-    /*
-     * switch_to() only preserves general registers.  User mode owns tp, so
-     * kernel current tracking lives in current_task instead.  If a timer trap
-     * switches from one kernel thread to another, the resumed thread inherits
-     * trap-time SIE=0 unless we restore the kernel scheduling invariant here.
-     */
-    if (get_current()->kind == TASK_KERNEL)
-        local_irq_enable();
+    irq_restore(flags);
 }
 
 static void kernel_thread_start(void)
@@ -1650,8 +1676,15 @@ static long wait_for_child(long pid)
 
     while (1)
     {
-        if (!task_has_child(current, pid))
+        unsigned long flags = irq_save();
+        struct task_struct *zombie = 0;
+        int done_pid = -1;
+
+        if (!task_has_child_locked(current, pid))
+        {
+            irq_restore(flags);
             return -1;
+        }
 
         if (run_queue)
         {
@@ -1663,19 +1696,32 @@ static long wait_for_child(long pid)
                     (pid < 0 || cur->pid == pid) &&
                     cur->state == TASK_ZOMBIE)
                 {
-                    int done_pid = cur->pid;
-                    release_task(cur);
-                    return done_pid;
+                    done_pid = cur->pid;
+                    zombie = cur;
+                    remove_task_from_queue_locked(cur);
+                    break;
                 }
                 cur = next;
             } while (run_queue && cur != run_queue);
         }
 
+        if (zombie)
+        {
+            irq_restore(flags);
+            free_task_storage(zombie);
+            return done_pid;
+        }
+
         current->waiting_pid = pid;
         current->state = TASK_WAITING;
+        irq_restore(flags);
+
         schedule();
+
+        flags = irq_save();
         current->state = TASK_RUNNING;
         current->waiting_pid = -1;
+        irq_restore(flags);
     }
 }
 
@@ -1703,9 +1749,7 @@ static void user_console_wait_turn(struct task_struct *current)
     while (user_console_owner_pid >= 0 &&
            user_console_owner_pid != current->pid)
     {
-        struct task_struct *owner = find_task(user_console_owner_pid);
-
-        if (!owner || owner->state == TASK_ZOMBIE)
+        if (!task_is_alive(user_console_owner_pid))
         {
             user_console_owner_pid = -1;
             break;
@@ -1731,16 +1775,25 @@ static void process_exit_current(int status)
 
 static int stop_task(long pid)
 {
-    struct task_struct *task = find_task((int)pid);
+    unsigned long flags = irq_save();
+    struct task_struct *task = find_task_locked((int)pid);
 
     if (!task || task == &boot_task)
+    {
+        irq_restore(flags);
         return -1;
-
-    user_console_release_pid(task->pid);
-    mark_task_zombie(task, -1);
+    }
 
     if (task == get_current())
+    {
+        irq_restore(flags);
         process_exit_current(-1);
+        return 0;
+    }
+
+    user_console_release_pid(task->pid);
+    mark_task_zombie_locked(task, -1);
+    irq_restore(flags);
 
     return 0;
 }
@@ -1750,19 +1803,32 @@ static void process_sleep_usec(unsigned int usec)
     struct task_struct *current = get_current();
     unsigned long ticks =
         ((unsigned long)usec * task_ticks_per_sec() + 999999UL) / 1000000UL;
+    unsigned long flags;
 
     user_console_release_current();
+
+    flags = irq_save();
     current->wakeup_tick = read_time() + ticks;
     current->state = TASK_SLEEPING;
+    irq_restore(flags);
+
     schedule();
+
+    flags = irq_save();
     current->state = TASK_RUNNING;
     current->wakeup_tick = 0;
+    irq_restore(flags);
 }
 
 static void process_wake_sleepers(void)
 {
+    unsigned long flags = irq_save();
+
     if (!run_queue)
+    {
+        irq_restore(flags);
         return;
+    }
 
     unsigned long now = read_time();
     struct task_struct *cur = run_queue;
@@ -1777,25 +1843,41 @@ static void process_wake_sleepers(void)
         }
         cur = cur->next;
     } while (cur != run_queue);
+
+    irq_restore(flags);
 }
 
 static void kill_zombies(void)
 {
-    if (!run_queue)
-        return;
-
-    struct task_struct *cur = run_queue;
-    do
+    while (1)
     {
-        struct task_struct *next = cur->next;
-        if (cur != get_current() && cur->state == TASK_ZOMBIE &&
-            (!cur->parent || cur->parent->state == TASK_ZOMBIE) &&
-            !task_has_child(cur, -1))
+        unsigned long flags = irq_save();
+        struct task_struct *victim = 0;
+
+        if (run_queue)
         {
-            release_task(cur);
+            struct task_struct *cur = run_queue;
+            do
+            {
+                if (cur != get_current() && cur->state == TASK_ZOMBIE &&
+                    (!cur->parent || cur->parent->state == TASK_ZOMBIE) &&
+                    !task_has_child_locked(cur, -1))
+                {
+                    victim = cur;
+                    remove_task_from_queue_locked(cur);
+                    break;
+                }
+                cur = cur->next;
+            } while (cur != run_queue);
         }
-        cur = next;
-    } while (run_queue && cur != run_queue);
+
+        irq_restore(flags);
+
+        if (!victim)
+            return;
+
+        free_task_storage(victim);
+    }
 }
 
 static void idle_thread(void *arg)
@@ -2068,12 +2150,19 @@ static void sys_sigreturn(struct pt_regs *regs)
 
 static int sys_kill(long pid, int signum)
 {
+    unsigned long flags;
+    struct task_struct *task;
+
     if (signum <= 0 || signum >= MAX_SIGNAL)
         return -1;
 
-    struct task_struct *task = find_task((int)pid);
+    flags = irq_save();
+    task = find_task_locked((int)pid);
     if (!task || task->kind != TASK_USER)
+    {
+        irq_restore(flags);
         return -1;
+    }
 
     if (task->signal_handlers[signum])
     {
@@ -2084,9 +2173,10 @@ static int sys_kill(long pid, int signum)
     else
     {
         user_console_release_pid(task->pid);
-        mark_task_zombie(task, 128 + signum);
+        mark_task_zombie_locked(task, 128 + signum);
     }
 
+    irq_restore(flags);
     return 0;
 }
 
@@ -2387,19 +2477,29 @@ static int tasks_running = 0;
 
 void add_task(task_callback_t callback, void *arg, int priority)
 {
+    unsigned long flags;
+
+    if (!callback)
+        return;
+
+    flags = irq_save();
+
     for (int i = 0; i < MAX_TASKS; i++)
     {
         if (!tasks[i].used)
         {
-            tasks[i].used = 1;
             tasks[i].priority = priority;
             tasks[i].seq = task_seq++;
             tasks[i].cb = callback;
             tasks[i].arg = arg;
+            asm volatile("" ::: "memory");
+            tasks[i].used = 1;
+            irq_restore(flags);
             return;
         }
     }
 
+    irq_restore(flags);
     uart_puts("[Task] queue full\n");
 }
 
