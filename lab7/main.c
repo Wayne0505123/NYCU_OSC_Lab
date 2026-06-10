@@ -1,0 +1,6038 @@
+#include "mm.h"
+#include <stdint.h>
+#include <stddef.h>
+
+/* ---------- UART from uart.c ---------- */
+extern char uart_getc_polling(void);
+extern void uart_putc_polling(char c);
+extern void uart_puts_polling(const char *s);
+extern char uart_getc(void);
+extern void uart_putc(char c);
+extern void uart_puts(const char *s);
+extern void uart_hex(unsigned long h);
+extern unsigned char uart_getb(void);
+extern void uart_putb(unsigned char c);
+extern void uart_set_base(unsigned long base);
+extern void uart_set_config(int reg_shift, int reg_io_width);
+extern unsigned int uart_read_reg(int off);
+extern void uart_write_reg(int off, unsigned int val);
+struct pt_regs;
+extern void video_init(void);
+extern void video_bmp_display(unsigned int *bmp_image, int width, int height);
+extern long video_fb_write(unsigned long offset, const void *buf, unsigned long len);
+extern int video_fb_get_info(unsigned int *width, unsigned int *height,
+                             unsigned int *bpp);
+extern void switch_to(void *prev, void *next);
+extern void restore_trap_frame(struct pt_regs *regs);
+
+/* ---------- Linker symbols ---------- */
+extern char _start[];
+extern char _end[];
+void start_kernel(const void *fdt);
+extern void handle_exception(void);
+
+/* ---------- Boot / load / relocation ---------- */
+#define LOAD_ADDR_PHYS 0x20000000UL
+#define CPIO_LOAD_ADDR_PHYS 0x46100000UL
+#define NEW_FDT_ADDR_PHYS 0x32000000UL
+#define LOAD_ADDR ((unsigned char *)phys_to_virt_addr(LOAD_ADDR_PHYS))
+#define CPIO_LOAD_ADDR ((unsigned char *)phys_to_virt_addr(CPIO_LOAD_ADDR_PHYS))
+#define NEW_FDT_ADDR ((unsigned char *)phys_to_virt_addr(NEW_FDT_ADDR_PHYS))
+#define NEW_FDT_SIZE 0x400000UL
+#define RELOC_ADDR 0x20000000UL
+#define BOOT_MAGIC 0x544F4F42UL
+#define KERNEL_STACK_SIZE (128 * 1024UL)
+
+static const void *boot_fdt;
+
+/* ---------- Lab6 virtual memory ---------- */
+#define PAGE_OFFSET 0xffffffc000000000UL
+#define KERNEL_PHYS_BASE 0x00200000UL
+#define KERNEL_VIRT_BASE (PAGE_OFFSET + KERNEL_PHYS_BASE)
+#define PT_ENTRIES 512
+#define LINEAR_MAP_GIB 16
+#define PGD_SHIFT 30
+#define PMD_SHIFT 21
+#define PTE_SHIFT 12
+#define PGD_SIZE (1UL << PGD_SHIFT)
+#define PMD_SIZE (1UL << PMD_SHIFT)
+#define PTE_INDEX(x, shift) (((x) >> (shift)) & 0x1ffUL)
+#define PFN_DOWN(x) ((x) >> PTE_SHIFT)
+
+#define PTE_V (1UL << 0)
+#define PTE_R (1UL << 1)
+#define PTE_W (1UL << 2)
+#define PTE_X (1UL << 3)
+#define PTE_U (1UL << 4)
+#define PTE_G (1UL << 5)
+#define PTE_A (1UL << 6)
+#define PTE_D (1UL << 7)
+#define PTE_COW (1UL << 8)
+
+#define PROT_KERNEL (PTE_V | PTE_R | PTE_W | PTE_X | PTE_G | PTE_A | PTE_D)
+#define PROT_MMIO (PTE_V | PTE_R | PTE_W | PTE_G | PTE_A | PTE_D)
+#define PROT_USER_BASE (PTE_V | PTE_U | PTE_A | PTE_D)
+#define PROT_USER_R (PROT_USER_BASE | PTE_R)
+#define PROT_USER_RW (PROT_USER_BASE | PTE_R | PTE_W)
+#define PROT_USER_RWX (PROT_USER_BASE | PTE_R | PTE_W | PTE_X)
+
+#define SATP_SV39 (8UL << 60)
+#define MAKE_PTE(pa, flags) ((PFN_DOWN(pa) << 10) | (flags))
+#define PTE_TO_PA(pte) (((pte) >> 10) << PTE_SHIFT)
+#define PTE_FLAGS(pte) ((pte) & 0x3ffUL)
+#define MAKE_SATP(pgd_pa) (SATP_SV39 | PFN_DOWN(pgd_pa))
+
+static unsigned long __attribute__((section(".page_table"), aligned(PAGE_SIZE)))
+kernel_pgd[PT_ENTRIES];
+static unsigned long __attribute__((section(".page_table"), aligned(PAGE_SIZE)))
+kernel_pmd[LINEAR_MAP_GIB][PT_ENTRIES];
+#define MMIO_MAP_GIB 4
+static unsigned long __attribute__((section(".page_table"), aligned(PAGE_SIZE)))
+kernel_mmio_pte[MMIO_MAP_GIB][PT_ENTRIES][PT_ENTRIES];
+
+static inline int is_kernel_va(unsigned long addr)
+{
+    return addr >= PAGE_OFFSET;
+}
+
+static inline unsigned long phys_to_virt_addr(unsigned long pa)
+{
+    return pa + PAGE_OFFSET;
+}
+
+static inline unsigned long virt_to_phys_addr(unsigned long va)
+{
+    return is_kernel_va(va) ? va - PAGE_OFFSET : va;
+}
+
+static inline void sfence_vma(void)
+{
+    asm volatile("sfence.vma zero, zero" ::: "memory");
+}
+
+static inline void fence_i(void)
+{
+    asm volatile("fence.i" ::: "memory");
+}
+
+static inline void write_satp_pgd(unsigned long *pgd)
+{
+    unsigned long pa = virt_to_phys_addr((unsigned long)pgd);
+
+    asm volatile("csrw satp, %0" ::"r"(MAKE_SATP(pa)) : "memory");
+    sfence_vma();
+}
+
+void setup_vm(void)
+{
+    unsigned long kernel_start = virt_to_phys_addr((unsigned long)_start);
+    unsigned long kernel_end =
+        (virt_to_phys_addr((unsigned long)_end) + PAGE_SIZE - 1) &
+        ~(PAGE_SIZE - 1);
+
+    for (int i = 0; i < PT_ENTRIES; i++)
+        kernel_pgd[i] = 0;
+
+    for (int i = 0; i < LINEAR_MAP_GIB; i++)
+    {
+        unsigned long base = (unsigned long)i * PGD_SIZE;
+        unsigned long pmd_pa = virt_to_phys_addr((unsigned long)kernel_pmd[i]);
+        unsigned long high_idx = PTE_INDEX(PAGE_OFFSET + base, PGD_SHIFT);
+
+        for (int j = 0; j < PT_ENTRIES; j++)
+        {
+            unsigned long pmd_base = base + (unsigned long)j * PMD_SIZE;
+
+            if (i < MMIO_MAP_GIB)
+            {
+                unsigned long pte_pa =
+                    virt_to_phys_addr((unsigned long)kernel_mmio_pte[i][j]);
+
+                kernel_pmd[i][j] = MAKE_PTE(pte_pa, PTE_V);
+                for (int k = 0; k < PT_ENTRIES; k++)
+                {
+                    unsigned long pa = pmd_base + (unsigned long)k * PAGE_SIZE;
+                    unsigned long prot =
+                        (pa >= kernel_start && pa < kernel_end)
+                            ? PROT_KERNEL
+                            : PROT_MMIO;
+
+                    kernel_mmio_pte[i][j][k] =
+                        MAKE_PTE(pa, prot);
+                }
+            }
+            else
+            {
+                kernel_pmd[i][j] = MAKE_PTE(pmd_base, PROT_KERNEL);
+            }
+        }
+
+        kernel_pgd[i] = MAKE_PTE(pmd_pa, PTE_V);
+        kernel_pgd[high_idx] = MAKE_PTE(pmd_pa, PTE_V);
+    }
+
+    write_satp_pgd(kernel_pgd);
+}
+
+static void drop_identity_map(void)
+{
+    for (int i = 0; i < LINEAR_MAP_GIB; i++)
+        kernel_pgd[i] = 0;
+
+    sfence_vma();
+}
+
+/* ---------- Orange Pi RV2 UART0 / PLIC ---------- */
+#define UART_BASE 0xD4017000UL
+#define UART_RBR 0
+#define UART_THR 0
+#define UART_IER 1
+#define UART_IIR 2
+#define UART_LCR 3
+#define UART_MCR 4
+#define UART_LSR 5
+
+#define UART_IER_RX (1 << 0)
+#define UART_IER_TX (1 << 1)
+#define UART_MCR_OUT2 (1 << 3)
+#define UART_LSR_DR (1 << 0)
+#define UART_LSR_THRE (1 << 5)
+#define UART_LSR_TEMT (1 << 6)
+
+#define PLIC_CONTEXT(hart) ((hart) * 2 + 1) /* S-mode context */
+
+static unsigned long plic_base = 0;
+
+static inline unsigned long plic_priority_addr(int irq)
+{
+    return plic_base + (unsigned long)irq * 4UL;
+}
+
+static inline unsigned long plic_enable_addr(int ctx)
+{
+    return plic_base + 0x2000UL + (unsigned long)ctx * 0x80UL;
+}
+
+static inline unsigned long plic_threshold_addr(int ctx)
+{
+    return plic_base + 0x200000UL + (unsigned long)ctx * 0x1000UL;
+}
+
+static inline unsigned long plic_claim_addr(int ctx)
+{
+    return plic_base + 0x200004UL + (unsigned long)ctx * 0x1000UL;
+}
+
+static unsigned long boot_cpu_hartid = 0;
+static int uart_irq_id = 42;
+
+static inline void write32(unsigned long addr, unsigned int value)
+{
+    *(volatile unsigned int *)addr = value;
+}
+
+static inline unsigned int read32(unsigned long addr)
+{
+    return *(volatile unsigned int *)addr;
+}
+
+static unsigned int uart_ier_shadow;
+
+static void uart_enable_tx_irq(void)
+{
+    uart_ier_shadow |= UART_IER_RX | UART_IER_TX;
+    uart_write_reg(UART_IER, uart_ier_shadow);
+}
+
+static void uart_disable_tx_irq(void)
+{
+    uart_ier_shadow &= ~UART_IER_TX;
+    uart_ier_shadow |= UART_IER_RX;
+    uart_write_reg(UART_IER, uart_ier_shadow);
+}
+/* ---------- CSR / trap constants ---------- */
+#define SSTATUS_SIE (1UL << 1)
+#define SSTATUS_SPIE (1UL << 5)
+#define SSTATUS_SPP (1UL << 8)
+#define SSTATUS_SUM (1UL << 18)
+
+#define SIE_STIE (1UL << 5)
+#define SIE_SEIE (1UL << 9)
+
+#define SCAUSE_INTERRUPT (1UL << 63)
+#define SCAUSE_U_ECALL 8UL
+#define SCAUSE_INST_PAGE_FAULT 12UL
+#define SCAUSE_LOAD_PAGE_FAULT 13UL
+#define SCAUSE_STORE_PAGE_FAULT 15UL
+#define SCAUSE_S_TIMER (SCAUSE_INTERRUPT | 5UL)
+#define SCAUSE_S_EXT (SCAUSE_INTERRUPT | 9UL)
+
+struct pt_regs
+{
+    unsigned long ra;
+    unsigned long sp;
+    unsigned long gp;
+    unsigned long tp;
+    unsigned long t0;
+    unsigned long t1;
+    unsigned long t2;
+    unsigned long s0;
+    unsigned long s1;
+    unsigned long a0;
+    unsigned long a1;
+    unsigned long a2;
+    unsigned long a3;
+    unsigned long a4;
+    unsigned long a5;
+    unsigned long a6;
+    unsigned long a7;
+    unsigned long s2;
+    unsigned long s3;
+    unsigned long s4;
+    unsigned long s5;
+    unsigned long s6;
+    unsigned long s7;
+    unsigned long s8;
+    unsigned long s9;
+    unsigned long s10;
+    unsigned long s11;
+    unsigned long t3;
+    unsigned long t4;
+    unsigned long t5;
+    unsigned long t6;
+    unsigned long sepc;
+    unsigned long sstatus;
+    unsigned long scause;
+    unsigned long stval;
+};
+
+/* ---------- SBI ---------- */
+#define SBI_EXT_SET_TIMER 0x0
+#define SBI_EXT_SHUTDOWN 0x8
+#define SBI_EXT_BASE 0x10
+
+struct sbiret
+{
+    long error;
+    long value;
+};
+
+static struct sbiret sbi_ecall(int ext, int fid,
+                               unsigned long arg0,
+                               unsigned long arg1,
+                               unsigned long arg2,
+                               unsigned long arg3,
+                               unsigned long arg4,
+                               unsigned long arg5)
+{
+    struct sbiret ret;
+
+    register unsigned long a0 asm("a0") = arg0;
+    register unsigned long a1 asm("a1") = arg1;
+    register unsigned long a2 asm("a2") = arg2;
+    register unsigned long a3 asm("a3") = arg3;
+    register unsigned long a4 asm("a4") = arg4;
+    register unsigned long a5 asm("a5") = arg5;
+    register unsigned long a6 asm("a6") = fid;
+    register unsigned long a7 asm("a7") = ext;
+
+    asm volatile("ecall"
+                 : "+r"(a0), "+r"(a1)
+                 : "r"(a2), "r"(a3), "r"(a4), "r"(a5), "r"(a6), "r"(a7)
+                 : "memory");
+
+    ret.error = (long)a0;
+    ret.value = (long)a1;
+    return ret;
+}
+
+static void sbi_set_timer(unsigned long stime_value)
+{
+    sbi_ecall(SBI_EXT_SET_TIMER, 0, stime_value, 0, 0, 0, 0, 0);
+}
+
+static unsigned long sbi_get_spec_version(void)
+{
+    return (unsigned long)sbi_ecall(SBI_EXT_BASE, 0, 0, 0, 0, 0, 0, 0).value;
+}
+
+static unsigned long sbi_get_impl_id(void)
+{
+    return (unsigned long)sbi_ecall(SBI_EXT_BASE, 1, 0, 0, 0, 0, 0, 0).value;
+}
+
+static unsigned long sbi_get_impl_version(void)
+{
+    return (unsigned long)sbi_ecall(SBI_EXT_BASE, 2, 0, 0, 0, 0, 0, 0).value;
+}
+
+static inline unsigned long read_time(void)
+{
+    unsigned long x;
+    asm volatile("rdtime %0" : "=r"(x));
+    return x;
+}
+
+static inline void local_irq_enable(void)
+{
+    asm volatile("csrsi sstatus, 2" ::: "memory");
+}
+
+static inline void local_irq_disable(void)
+{
+    asm volatile("csrci sstatus, 2" ::: "memory");
+}
+
+static inline unsigned long read_sstatus(void)
+{
+    unsigned long x;
+
+    asm volatile("csrr %0, sstatus" : "=r"(x));
+    return x;
+}
+
+static inline unsigned long user_access_begin(void)
+{
+    unsigned long old = read_sstatus();
+
+    asm volatile("csrs sstatus, %0" ::"r"(SSTATUS_SUM) : "memory");
+    return old;
+}
+
+static inline void user_access_end(unsigned long old)
+{
+    if (!(old & SSTATUS_SUM))
+        asm volatile("csrc sstatus, %0" ::"r"(SSTATUS_SUM) : "memory");
+}
+
+static void enable_timer_interrupt(void)
+{
+    asm volatile("csrs sie, %0" ::"r"(SIE_STIE) : "memory");
+}
+
+static void enable_external_interrupt(void)
+{
+    asm volatile("csrs sie, %0" ::"r"(SIE_SEIE) : "memory");
+}
+
+static inline void set_stvec_relocated(void)
+{
+    asm volatile("csrw stvec, %0" ::"r"(handle_exception) : "memory");
+}
+
+static inline unsigned long irq_save(void)
+{
+    unsigned long flags;
+    asm volatile("csrrci %0, sstatus, 2" : "=r"(flags)::"memory");
+    return flags;
+}
+
+static inline void irq_restore(unsigned long flags)
+{
+    if (flags & SSTATUS_SIE)
+        local_irq_enable();
+    else
+        local_irq_disable();
+}
+
+/* ---------- tiny libc ---------- */
+static size_t strlen_simple(const char *s)
+{
+    size_t n = 0;
+    while (s[n])
+        n++;
+    return n;
+}
+
+static int strcmp_full(const char *a, const char *b)
+{
+    while (*a && *b)
+    {
+        if (*a != *b)
+            return (unsigned char)*a - (unsigned char)*b;
+        a++;
+        b++;
+    }
+    return (unsigned char)*a - (unsigned char)*b;
+}
+
+static int strcmp_simple(const char *a, const char *b)
+{
+    return strcmp_full(a, b) == 0;
+}
+
+static int strncmp_simple(const char *a, const char *b, size_t n)
+{
+    while (n-- > 0)
+    {
+        if (*a != *b)
+            return (unsigned char)*a - (unsigned char)*b;
+        if (*a == '\0')
+            return 0;
+        a++;
+        b++;
+    }
+    return 0;
+}
+
+int strncmp(const char *a, const char *b, int n)
+{
+    if (n <= 0)
+        return 0;
+    return strncmp_simple(a, b, (size_t)n);
+}
+
+void *memcpy(void *dst, const void *src, size_t n)
+{
+    unsigned char *d = (unsigned char *)dst;
+    const unsigned char *s = (const unsigned char *)src;
+
+    for (size_t i = 0; i < n; i++)
+        d[i] = s[i];
+
+    return dst;
+}
+
+void *memset(void *dst, int value, size_t n)
+{
+    unsigned char *d = (unsigned char *)dst;
+
+    for (size_t i = 0; i < n; i++)
+        d[i] = (unsigned char)value;
+
+    return dst;
+}
+
+static void strcpy_simple(char *dst, const char *src)
+{
+    while ((*dst++ = *src++))
+        ;
+}
+
+static void strncpy_message(char *dst, const char *src, size_t max)
+{
+    size_t i = 0;
+    if (max == 0)
+        return;
+    while (i + 1 < max && src[i])
+    {
+        dst[i] = src[i];
+        i++;
+    }
+    dst[i] = '\0';
+}
+
+static void strcat_simple(char *dst, const char *src)
+{
+    while (*dst)
+        dst++;
+    while ((*dst++ = *src++))
+        ;
+}
+
+static int memcmp_simple(const void *s1, const void *s2, int n)
+{
+    const unsigned char *a = (const unsigned char *)s1;
+    const unsigned char *b = (const unsigned char *)s2;
+    while (n-- > 0)
+    {
+        if (*a != *b)
+            return *a - *b;
+        a++;
+        b++;
+    }
+    return 0;
+}
+
+static int hextoi_simple(const char *s, int n)
+{
+    int r = 0;
+    while (n-- > 0)
+    {
+        r <<= 4;
+        if (*s >= '0' && *s <= '9')
+            r += *s - '0';
+        else if (*s >= 'A' && *s <= 'F')
+            r += *s - 'A' + 10;
+        else if (*s >= 'a' && *s <= 'f')
+            r += *s - 'a' + 10;
+        s++;
+    }
+    return r;
+}
+
+static int align_int(int n, int byte)
+{
+    return (n + byte - 1) & ~(byte - 1);
+}
+
+static const void *align_up_ptr(const void *ptr, size_t align)
+{
+    return (const void *)(((uintptr_t)ptr + align - 1) & ~(align - 1));
+}
+
+static void uart_put_uint(unsigned long x)
+{
+    char buf[32];
+    int i = 0;
+
+    if (x == 0)
+    {
+        uart_putc('0');
+        return;
+    }
+
+    while (x > 0)
+    {
+        buf[i++] = (char)('0' + (x % 10));
+        x /= 10;
+    }
+
+    while (i > 0)
+        uart_putc(buf[--i]);
+}
+
+/*
+ * Trap/debug output must not depend on the asynchronous TX ring.
+ * When a trap is taken from U-mode, SIE is cleared by hardware; if the
+ * async console waits for TX interrupts to drain the ring, it can sleep in
+ * wfi forever.  Keep trap diagnostics on polling UART.
+ */
+static void trap_puts(const char *s)
+{
+    uart_puts_polling(s);
+}
+
+static void trap_put_uint(unsigned long x)
+{
+    char buf[32];
+    int i = 0;
+
+    if (x == 0)
+    {
+        uart_putc_polling('0');
+        return;
+    }
+
+    while (x > 0)
+    {
+        buf[i++] = (char)('0' + (x % 10));
+        x /= 10;
+    }
+
+    while (i > 0)
+        uart_putc_polling(buf[--i]);
+}
+
+static void trap_hex(unsigned long h)
+{
+    const char *hex = "0123456789abcdef";
+
+    trap_puts("0x");
+    for (int i = (int)(sizeof(unsigned long) * 2) - 1; i >= 0; i--)
+        uart_putc_polling(hex[(h >> (i * 4)) & 0xf]);
+}
+
+static void trap_hex32(unsigned long h)
+{
+    const char *hex = "0123456789abcdef";
+
+    trap_puts("0x");
+    for (int i = 7; i >= 0; i--)
+        uart_putc_polling(hex[(h >> (i * 4)) & 0xf]);
+}
+
+/* ---------- FDT parser ---------- */
+#define FDT_BEGIN_NODE 0x00000001
+#define FDT_END_NODE 0x00000002
+#define FDT_PROP 0x00000003
+#define FDT_NOP 0x00000004
+#define FDT_END 0x00000009
+
+struct fdt_header
+{
+    uint32_t magic;
+    uint32_t totalsize;
+    uint32_t off_dt_struct;
+    uint32_t off_dt_strings;
+    uint32_t off_mem_rsvmap;
+    uint32_t version;
+    uint32_t last_comp_version;
+    uint32_t boot_cpuid_phys;
+    uint32_t size_dt_strings;
+    uint32_t size_dt_struct;
+};
+
+static uint32_t bswap32_main(uint32_t x)
+{
+    return ((x & 0x000000ffU) << 24) |
+           ((x & 0x0000ff00U) << 8) |
+           ((x & 0x00ff0000U) >> 8) |
+           ((x & 0xff000000U) >> 24);
+}
+
+static unsigned long read_cells(const uint32_t *p, int cells)
+{
+    unsigned long v = 0;
+    for (int i = 0; i < cells; i++)
+        v = (v << 32) | bswap32_main(p[i]);
+    return v;
+}
+
+static int fdt_is_valid(const void *fdt)
+{
+    if (!fdt)
+        return 0;
+
+    const struct fdt_header *hdr = (const struct fdt_header *)fdt;
+    return bswap32_main(hdr->magic) == 0xd00dfeed;
+}
+
+static int bytes_contains_string(const char *buf, int len, const char *needle)
+{
+    size_t nlen = strlen_simple(needle);
+
+    if (!buf || !needle || nlen == 0 || len <= 0)
+        return 0;
+
+    for (int i = 0; i + (int)nlen <= len; i++)
+    {
+        size_t j = 0;
+        while (j < nlen && buf[i + (int)j] == needle[j])
+            j++;
+        if (j == nlen)
+            return 1;
+    }
+
+    return 0;
+}
+
+int fdt_path_offset(const void *fdt, const char *path)
+{
+    const struct fdt_header *hdr = (const struct fdt_header *)fdt;
+    if (bswap32_main(hdr->magic) != 0xd00dfeed)
+        return -1;
+
+    const char *struct_base = (const char *)fdt + bswap32_main(hdr->off_dt_struct);
+    const char *p = struct_base;
+    char curpath[1024];
+    size_t pathlen_stack[128];
+    int depth = 0;
+
+    curpath[0] = '\0';
+
+    while (1)
+    {
+        int nodeoff = (int)(p - struct_base);
+        uint32_t tag = bswap32_main(*(const uint32_t *)p);
+        p += 4;
+
+        if (tag == FDT_BEGIN_NODE)
+        {
+            const char *name = p;
+            size_t oldlen = strlen_simple(curpath);
+            pathlen_stack[depth++] = oldlen;
+
+            if (oldlen == 0)
+            {
+                strcpy_simple(curpath, "/");
+            }
+            else
+            {
+                if (strcmp_full(curpath, "/") != 0)
+                    strcat_simple(curpath, "/");
+                strcat_simple(curpath, name);
+            }
+
+            const char *a = curpath;
+            const char *b = path;
+            int matched = 1;
+
+            while (*a || *b)
+            {
+                if (*a == '/' && *b == '/')
+                {
+                    a++;
+                    b++;
+                    continue;
+                }
+
+                while (*a && *b && *a != '/' && *b != '/' && *a == *b)
+                {
+                    a++;
+                    b++;
+                }
+
+                if (!((*b == '\0' || *b == '/') &&
+                      (*a == '\0' || *a == '/' || *a == '@')))
+                {
+                    matched = 0;
+                    break;
+                }
+
+                while (*a && *a != '/')
+                    a++;
+                while (*b && *b != '/')
+                    b++;
+
+                if ((*a == '\0') != (*b == '\0'))
+                {
+                    matched = 0;
+                    break;
+                }
+            }
+
+            if (matched)
+                return nodeoff;
+
+            p = (const char *)align_up_ptr(p + strlen_simple(name) + 1, 4);
+        }
+        else if (tag == FDT_END_NODE)
+        {
+            if (depth > 0)
+            {
+                size_t oldlen = pathlen_stack[--depth];
+                curpath[oldlen] = '\0';
+            }
+        }
+        else if (tag == FDT_PROP)
+        {
+            uint32_t len = bswap32_main(*(const uint32_t *)p);
+            p += 8;
+            p = (const char *)align_up_ptr(p + len, 4);
+        }
+        else if (tag == FDT_NOP)
+        {
+        }
+        else if (tag == FDT_END)
+        {
+            break;
+        }
+        else
+        {
+            return -1;
+        }
+    }
+
+    return -1;
+}
+
+const void *fdt_getprop(const void *fdt, int nodeoffset,
+                        const char *name, int *lenp)
+{
+    const struct fdt_header *hdr = (const struct fdt_header *)fdt;
+
+    if (bswap32_main(hdr->magic) != 0xd00dfeed)
+        return 0;
+
+    const char *struct_base = (const char *)fdt + bswap32_main(hdr->off_dt_struct);
+    const char *strings_base = (const char *)fdt + bswap32_main(hdr->off_dt_strings);
+    const char *p = struct_base + nodeoffset;
+
+    if (bswap32_main(*(const uint32_t *)p) != FDT_BEGIN_NODE)
+        return 0;
+
+    p += 4;
+    p = (const char *)align_up_ptr(p + strlen_simple(p) + 1, 4);
+
+    int depth = 0;
+
+    while (1)
+    {
+        uint32_t tag = bswap32_main(*(const uint32_t *)p);
+        p += 4;
+
+        if (tag == FDT_PROP)
+        {
+            uint32_t len = bswap32_main(*(const uint32_t *)p);
+            p += 4;
+            uint32_t nameoff = bswap32_main(*(const uint32_t *)p);
+            p += 4;
+
+            const char *prop_name = strings_base + nameoff;
+            const void *prop_data = p;
+
+            if (depth == 0 && strcmp_full(prop_name, name) == 0)
+            {
+                if (lenp)
+                    *lenp = (int)len;
+                return prop_data;
+            }
+
+            p = (const char *)align_up_ptr(p + len, 4);
+        }
+        else if (tag == FDT_BEGIN_NODE)
+        {
+            depth++;
+            p = (const char *)align_up_ptr(p + strlen_simple(p) + 1, 4);
+        }
+        else if (tag == FDT_END_NODE)
+        {
+            if (depth == 0)
+                break;
+            depth--;
+        }
+        else if (tag == FDT_NOP)
+        {
+        }
+        else if (tag == FDT_END)
+        {
+            break;
+        }
+        else
+        {
+            return 0;
+        }
+    }
+
+    return 0;
+}
+
+static void fdt_write_u64_prop(void *fdt, int node, const char *name,
+                               unsigned long value)
+{
+    int len = 0;
+    uint32_t *prop = (uint32_t *)fdt_getprop(fdt, node, name, &len);
+
+    if (!prop || len < 8)
+    {
+        uart_puts("fdt prop missing: ");
+        uart_puts(name);
+        uart_puts("\n");
+        return;
+    }
+
+    prop[0] = bswap32_main((uint32_t)(value >> 32));
+    prop[1] = bswap32_main((uint32_t)(value & 0xffffffffUL));
+}
+
+static void *make_writable_fdt_copy(const void *old_fdt)
+{
+    if (!fdt_is_valid(old_fdt))
+    {
+        uart_puts("invalid fdt\n");
+        return 0;
+    }
+
+    const struct fdt_header *old_hdr = (const struct fdt_header *)old_fdt;
+    unsigned int old_size = bswap32_main(old_hdr->totalsize);
+
+    if (old_size > NEW_FDT_SIZE)
+    {
+        uart_puts("new fdt buffer too small\n");
+        return 0;
+    }
+
+    unsigned char *dst = NEW_FDT_ADDR;
+    const unsigned char *src = (const unsigned char *)old_fdt;
+
+    for (unsigned int i = 0; i < old_size; i++)
+        dst[i] = src[i];
+
+    return (void *)dst;
+}
+
+static void update_initrd_in_fdt(void *fdt,
+                                 unsigned long initrd_start_addr,
+                                 unsigned long initrd_end_addr)
+{
+    int chosen = fdt_path_offset(fdt, "/chosen");
+
+    if (chosen < 0)
+    {
+        uart_puts("/chosen not found\n");
+        return;
+    }
+
+    fdt_write_u64_prop(fdt, chosen, "linux,initrd-start", initrd_start_addr);
+    fdt_write_u64_prop(fdt, chosen, "linux,initrd-end", initrd_end_addr);
+}
+
+static const void *initrd_start = 0;
+static const void *initrd_end = 0;
+static unsigned long timebase_frequency = 10000000UL;
+
+static void initrd_init_from_dtb(const void *fdt)
+{
+    int offset = fdt_path_offset(fdt, "/chosen");
+    int len;
+
+    if (offset < 0)
+    {
+        return;
+    }
+
+    const void *startp = fdt_getprop(fdt, offset, "linux,initrd-start", &len);
+    if (startp)
+        initrd_start =
+            (const void *)phys_to_virt_addr(read_cells((const uint32_t *)startp,
+                                                       len / 4));
+
+    const void *endp = fdt_getprop(fdt, offset, "linux,initrd-end", &len);
+    if (endp)
+        initrd_end =
+            (const void *)phys_to_virt_addr(read_cells((const uint32_t *)endp,
+                                                       len / 4));
+
+    uart_puts("initrd start = ");
+    uart_hex((unsigned long)initrd_start);
+    uart_puts("\n");
+    uart_puts("initrd end   = ");
+    uart_hex((unsigned long)initrd_end);
+    uart_puts("\n");
+}
+
+static int fdt_find_uart_node(const void *fdt)
+{
+    if (!fdt_is_valid(fdt))
+        return -1;
+
+    const struct fdt_header *hdr = (const struct fdt_header *)fdt;
+    const char *struct_base = (const char *)fdt + bswap32_main(hdr->off_dt_struct);
+    const char *p = struct_base;
+
+    while (1)
+    {
+        int nodeoff = (int)(p - struct_base);
+        uint32_t tag = bswap32_main(*(const uint32_t *)p);
+        p += 4;
+
+        if (tag == FDT_BEGIN_NODE)
+        {
+            const char *name = p;
+            int len = 0;
+            const char *compat = (const char *)fdt_getprop(fdt, nodeoff,
+                                                           "compatible", &len);
+
+            if ((compat &&
+                 (bytes_contains_string(compat, len, "ns16550a") ||
+                  bytes_contains_string(compat, len, "ns16550") ||
+                  bytes_contains_string(compat, len, "uart"))) ||
+                strncmp_simple(name, "serial", 6) == 0 ||
+                strncmp_simple(name, "uart", 4) == 0)
+            {
+                return nodeoff;
+            }
+
+            p = (const char *)align_up_ptr(p + strlen_simple(name) + 1, 4);
+        }
+        else if (tag == FDT_PROP)
+        {
+            uint32_t len = bswap32_main(*(const uint32_t *)p);
+            p += 8;
+            p = (const char *)align_up_ptr(p + len, 4);
+        }
+        else if (tag == FDT_END_NODE)
+        {
+        }
+        else if (tag == FDT_NOP)
+        {
+        }
+        else if (tag == FDT_END)
+        {
+            break;
+        }
+        else
+        {
+            return -1;
+        }
+    }
+
+    return -1;
+}
+
+static void uart_init_from_dtb(const void *fdt)
+{
+    int len;
+    unsigned long uart_base = UART_BASE;
+    int reg_shift = 2;
+    int reg_width = 4;
+
+    int node = fdt_path_offset(fdt, "/soc/serial@d4017000");
+    if (node < 0)
+        node = fdt_path_offset(fdt, "/soc/serial@10000000");
+    if (node < 0)
+        node = fdt_path_offset(fdt, "/soc/serial");
+    if (node < 0)
+        node = fdt_path_offset(fdt, "/soc/uart");
+    if (node < 0)
+        node = fdt_find_uart_node(fdt);
+
+    if (node < 0)
+    {
+        uart_set_base(phys_to_virt_addr(uart_base));
+        uart_set_config(reg_shift, reg_width);
+        uart_irq_id = 42;
+    }
+    else
+    {
+        const uint32_t *reg = (const uint32_t *)fdt_getprop(fdt, node, "reg", &len);
+        if (reg && len >= 16)
+            uart_base = read_cells(reg, 2);
+        else if (reg && len >= 8)
+            uart_base = read_cells(reg, 1);
+
+        const char *compat = (const char *)fdt_getprop(fdt, node, "compatible", &len);
+        if (compat &&
+            (bytes_contains_string(compat, len, "ns16550") ||
+             bytes_contains_string(compat, len, "ns16550a")))
+        {
+            reg_shift = 0;
+            reg_width = 1;
+        }
+        else if (compat)
+        {
+            reg_shift = 2;
+            reg_width = 4;
+        }
+
+        int shift_len = 0;
+        int width_len = 0;
+        const uint32_t *shift = (const uint32_t *)fdt_getprop(fdt, node, "reg-shift", &shift_len);
+        const uint32_t *width = (const uint32_t *)fdt_getprop(fdt, node, "reg-io-width", &width_len);
+        reg_shift = (shift && shift_len >= 4) ? (int)bswap32_main(shift[0]) : reg_shift;
+        reg_width = (width && width_len >= 4) ? (int)bswap32_main(width[0]) : reg_width;
+
+        const uint32_t *irq = (const uint32_t *)fdt_getprop(fdt, node, "interrupts", &len);
+        if (irq && len >= 4)
+            uart_irq_id = (int)bswap32_main(irq[0]);
+
+        uart_set_base(phys_to_virt_addr(uart_base));
+        uart_set_config(reg_shift, reg_width);
+    }
+
+    uart_puts("uart base from dtb = ");
+    uart_hex(uart_base);
+    uart_puts("\n");
+    uart_puts("uart reg shift = ");
+    uart_hex((unsigned long)reg_shift);
+    uart_puts("\n");
+    uart_puts("uart reg width = ");
+    uart_hex((unsigned long)reg_width);
+    uart_puts("\n");
+    uart_puts("uart irq = ");
+    uart_put_uint((unsigned long)uart_irq_id);
+    uart_puts("\n");
+}
+
+static int fdt_find_plic_node(const void *fdt)
+{
+    if (!fdt_is_valid(fdt))
+        return -1;
+
+    const struct fdt_header *hdr = (const struct fdt_header *)fdt;
+    const char *struct_base = (const char *)fdt + bswap32_main(hdr->off_dt_struct);
+    const char *p = struct_base;
+
+    while (1)
+    {
+        int nodeoff = (int)(p - struct_base);
+        uint32_t tag = bswap32_main(*(const uint32_t *)p);
+        p += 4;
+
+        if (tag == FDT_BEGIN_NODE)
+        {
+            const char *name = p;
+            int len = 0;
+            const char *compat = (const char *)fdt_getprop(fdt, nodeoff, "compatible", &len);
+            const void *ndev = fdt_getprop(fdt, nodeoff, "riscv,ndev", 0);
+
+            if ((compat &&
+                 (bytes_contains_string(compat, len, "riscv,plic0") ||
+                  bytes_contains_string(compat, len, "sifive,plic-1.0.0") ||
+                  bytes_contains_string(compat, len, "plic"))) ||
+                ndev)
+            {
+                return nodeoff;
+            }
+
+            p = (const char *)align_up_ptr(p + strlen_simple(name) + 1, 4);
+        }
+        else if (tag == FDT_PROP)
+        {
+            uint32_t len = bswap32_main(*(const uint32_t *)p);
+            p += 8;
+            p = (const char *)align_up_ptr(p + len, 4);
+        }
+        else if (tag == FDT_END_NODE)
+        {
+        }
+        else if (tag == FDT_NOP)
+        {
+        }
+        else if (tag == FDT_END)
+        {
+            break;
+        }
+        else
+        {
+            return -1;
+        }
+    }
+
+    return -1;
+}
+
+static void plic_init_from_dtb(const void *fdt)
+{
+    int len = 0;
+    int node = fdt_find_plic_node(fdt);
+
+    if (node < 0)
+    {
+        return;
+    }
+
+    const uint32_t *reg = (const uint32_t *)fdt_getprop(fdt, node, "reg", &len);
+    if (!reg || len < 8)
+    {
+        return;
+    }
+
+    if (len >= 16)
+        plic_base = phys_to_virt_addr(read_cells(reg, 2));
+    else
+        plic_base = phys_to_virt_addr(read_cells(reg, 1));
+
+    uart_puts("plic base = ");
+    uart_hex(plic_base);
+    uart_puts("\n");
+}
+
+static void timer_frequency_init_from_dtb(const void *fdt)
+{
+    int cpus = fdt_path_offset(fdt, "/cpus");
+    if (cpus < 0)
+    {
+        return;
+    }
+
+    int len;
+    const uint32_t *prop = (const uint32_t *)fdt_getprop(fdt, cpus, "timebase-frequency", &len);
+    if (prop && len >= 4)
+        timebase_frequency = bswap32_main(prop[0]);
+
+    uart_puts("timebase-frequency = ");
+    uart_put_uint(timebase_frequency);
+    uart_puts("\n");
+}
+
+/* ---------- CPIO / initramfs ---------- */
+struct cpio_t
+{
+    char magic[6];
+    char ino[8];
+    char mode[8];
+    char uid[8];
+    char gid[8];
+    char nlink[8];
+    char mtime[8];
+    char filesize[8];
+    char devmajor[8];
+    char devminor[8];
+    char rdevmajor[8];
+    char rdevminor[8];
+    char namesize[8];
+    char check[8];
+};
+
+static void console_putc_async(char c);
+static void console_puts_async(const char *s);
+static void console_hex_async(unsigned long h);
+static void console_put_uint_async(unsigned long x);
+static void console_flush_async(void);
+static void uart_pump_tx(void);
+static void uart_pump_tx_aggressive(void);
+static int console_tx_pending(void);
+
+static void initrd_list(const void *rd)
+{
+    const char *p = (const char *)rd;
+
+    while (p && p < (const char *)initrd_end)
+    {
+        const struct cpio_t *hdr = (const struct cpio_t *)p;
+
+        if (memcmp_simple(hdr->magic, "070701", 6) != 0)
+        {
+            console_puts_async("invalid cpio archive\n");
+            return;
+        }
+
+        int namesize = hextoi_simple(hdr->namesize, 8);
+        int filesize = hextoi_simple(hdr->filesize, 8);
+        const char *name = p + sizeof(struct cpio_t);
+
+        if (strcmp_full(name, "TRAILER!!!") == 0)
+            return;
+
+        console_put_uint_async((unsigned int)filesize);
+        console_putc_async(' ');
+        console_puts_async(name);
+        console_putc_async('\n');
+
+        const char *data = p + align_int(sizeof(struct cpio_t) + namesize, 4);
+        p = data + align_int(filesize, 4);
+    }
+}
+
+static const void *initrd_find(const char *filename, int *filesize_out)
+{
+    const char *p = (const char *)initrd_start;
+
+    while (p && p < (const char *)initrd_end)
+    {
+        const struct cpio_t *hdr = (const struct cpio_t *)p;
+
+        if (memcmp_simple(hdr->magic, "070701", 6) != 0)
+            return 0;
+
+        int namesize = hextoi_simple(hdr->namesize, 8);
+        int filesize = hextoi_simple(hdr->filesize, 8);
+        const char *name = p + sizeof(struct cpio_t);
+        const char *data = p + align_int(sizeof(struct cpio_t) + namesize, 4);
+
+        if (strcmp_full(name, "TRAILER!!!") == 0)
+            break;
+
+        const char *cmp_name = name;
+        if (cmp_name[0] == '.' && cmp_name[1] == '/')
+            cmp_name += 2;
+
+        if (strcmp_full(cmp_name, filename) == 0)
+        {
+            if (filesize_out)
+                *filesize_out = filesize;
+            return data;
+        }
+
+        p = data + align_int(filesize, 4);
+    }
+
+    return 0;
+}
+
+static void initrd_cat(const void *rd, const char *filename)
+{
+    (void)rd;
+    int size = 0;
+    const char *data = (const char *)initrd_find(filename, &size);
+
+    if (!data)
+    {
+        console_puts_async("initrd_cat: ");
+        console_puts_async(filename);
+        console_puts_async(": No such file\n");
+        return;
+    }
+
+    for (int i = 0; i < size; i++)
+        console_putc_async(data[i]);
+    console_putc_async('\n');
+}
+
+/* ---------- Lab5 thread / process scheduler ---------- */
+struct thread_context
+{
+    unsigned long ra;
+    unsigned long sp;
+    unsigned long s[12];
+};
+
+enum task_state
+{
+    TASK_RUNNING = 0,
+    TASK_SLEEPING,
+    TASK_WAITING,
+    TASK_ZOMBIE,
+};
+
+enum task_kind
+{
+    TASK_KERNEL = 0,
+    TASK_USER,
+};
+
+typedef void (*kernel_thread_fn)(void *arg);
+
+struct vnode;
+struct file;
+
+#define THREAD_STACK_SIZE (16 * 1024UL)
+#define USER_STACK_SIZE (16 * 1024 * 1024UL)
+#define MAX_SIGNAL 32
+#define SIGTERM 15
+#define USER_CODE_BASE 0x0UL
+#define USER_PROGRAM_REGION_SIZE (16 * 1024 * 1024UL)
+#define USER_STACK_TOP 0x4000000000UL
+#define USER_STACK_BASE (USER_STACK_TOP - USER_STACK_SIZE)
+#define USER_SIGNAL_STACK_TOP USER_STACK_BASE
+#define USER_SIGNAL_STACK_BASE (USER_SIGNAL_STACK_TOP - PAGE_SIZE)
+#define USER_MMAP_BASE 0x100000000UL
+#define USER_MMAP_END (USER_SIGNAL_STACK_BASE - PAGE_SIZE)
+#define VFS_MAX_FD 16
+
+#define USER_ACCESS_READ 1
+#define USER_ACCESS_WRITE 2
+#define USER_ACCESS_EXEC 4
+
+#define MAP_ANONYMOUS 0x20
+#define MAP_POPULATE 0x8000
+
+struct vm_area
+{
+    unsigned long start;
+    unsigned long end;
+    int prot;
+    unsigned long pte_flags;
+    const char *backing;
+    unsigned long backing_size;
+    unsigned long backing_offset;
+    struct vm_area *next;
+};
+
+struct task_struct
+{
+    struct thread_context thread;
+    int pid;
+    int state;
+    int kind;
+    int exit_status;
+    long waiting_pid;
+    unsigned long wakeup_tick;
+    void *kernel_stack;
+    void *user_stack;
+    unsigned long user_stack_size;
+    void *user_image;
+    unsigned long user_image_size;
+    int legacy_ecall_demo;
+    int legacy_ecall_count;
+    struct pt_regs *trap_frame;
+    kernel_thread_fn kernel_entry;
+    void *kernel_arg;
+    struct task_struct *parent;
+    struct task_struct *next;
+    unsigned long signal_handlers[MAX_SIGNAL];
+    unsigned long pending_signals;
+    int in_signal;
+    struct pt_regs saved_signal_frame;
+    void *signal_stack;
+    unsigned long signal_stack_va;
+    unsigned long *pgd;
+    struct vm_area *vmas;
+    unsigned long mmap_base;
+    struct vnode *root_dir;
+    struct vnode *cwd;
+    struct file *files[VFS_MAX_FD];
+};
+
+static struct task_struct boot_task;
+static struct task_struct *run_queue = 0;
+static struct task_struct *current_task = 0;
+static int next_pid = 1;
+static int scheduler_ready = 0;
+
+static void schedule(void);
+static void kill_zombies(void);
+static void process_wake_sleepers(void);
+static int exec_user_program(const char *filename);
+static void run_tasks(void);
+static void free_user_vm_resources(void *image,
+                                   void *stack,
+                                   struct vm_area *vmas,
+                                   unsigned long *pgd,
+                                   void *signal_stack);
+
+static struct task_struct *get_current(void)
+{
+    return current_task;
+}
+
+/* ---------- Lab7 VFS / tmpfs / ramfs / devfs ---------- */
+#define O_CREAT 00000100
+#define VFS_PATH_MAX 255
+#define VFS_NAME_MAX 64
+#define TMPFS_NAME_MAX 15
+#define TMPFS_MAX_DIR_ENTRY 16
+#define TMPFS_MAX_FILE_SIZE 4096
+#define RAMFS_MAX_DIR_ENTRY 64
+#define SEEK_SET 0
+#define FB_IOCTL_GET_INFO 0
+
+enum vnode_type
+{
+    VNODE_DIR = 1,
+    VNODE_FILE,
+};
+
+struct mount;
+struct filesystem;
+struct vnode_operations;
+struct file_operations;
+
+struct vnode
+{
+    struct mount *mount;
+    struct mount *mounted;
+    struct vnode *parent;
+    struct vnode_operations *v_ops;
+    struct file_operations *f_ops;
+    void *internal;
+    int type;
+};
+
+struct file
+{
+    struct vnode *vnode;
+    size_t f_pos;
+    struct file_operations *f_ops;
+    int flags;
+    int refcnt;
+};
+
+struct mount
+{
+    struct vnode *root;
+    struct vnode *mountpoint;
+    struct filesystem *fs;
+    struct mount *next;
+};
+
+struct filesystem
+{
+    const char *name;
+    int (*setup_mount)(struct filesystem *fs, struct mount *mount);
+};
+
+struct file_operations
+{
+    int (*open)(struct vnode *file_node, struct file **target);
+    int (*close)(struct file *file);
+    int (*read)(struct file *file, void *buf, size_t len);
+    int (*write)(struct file *file, const void *buf, size_t len);
+    long (*lseek64)(struct file *file, long offset, int whence);
+    int (*ioctl)(struct file *file, unsigned long request, void *arg);
+};
+
+struct vnode_operations
+{
+    int (*lookup)(struct vnode *dir_node, struct vnode **target,
+                  const char *component_name);
+    int (*create)(struct vnode *dir_node, struct vnode **target,
+                  const char *component_name);
+    int (*mkdir)(struct vnode *dir_node, struct vnode **target,
+                 const char *component_name);
+};
+
+static void user_console_release_current(void);
+static void user_console_wait_turn(struct task_struct *current);
+static int user_range_ok(const void *ptr, unsigned long len, int access);
+static int copy_user_string(char *dst, const char *src, size_t max);
+
+static struct mount *rootfs;
+static struct mount *mount_list;
+#define VFS_MAX_FILESYSTEMS 8
+static struct filesystem *filesystem_list[VFS_MAX_FILESYSTEMS];
+
+static void *zalloc(size_t size)
+{
+    void *p = allocate(size);
+
+    if (p)
+        memset(p, 0, size);
+    return p;
+}
+
+static int vfs_name_too_long(const char *name, size_t max)
+{
+    size_t n = 0;
+
+    if (!name || name[0] == '\0')
+        return 1;
+    while (name[n])
+    {
+        n++;
+        if (n > max)
+            return 1;
+    }
+    return 0;
+}
+
+static void copy_name(char *dst, size_t dst_size, const char *src)
+{
+    size_t i = 0;
+
+    if (!dst_size)
+        return;
+    while (i + 1 < dst_size && src[i])
+    {
+        dst[i] = src[i];
+        i++;
+    }
+    dst[i] = '\0';
+}
+
+static int pathname_valid(const char *path)
+{
+    size_t len = 0;
+
+    if (!path)
+        return 0;
+    while (path[len])
+    {
+        len++;
+        if (len > VFS_PATH_MAX)
+            return 0;
+    }
+    return 1;
+}
+
+static struct vnode *vfs_root_vnode(void)
+{
+    return rootfs ? rootfs->root : 0;
+}
+
+static struct vnode *task_root_or_default(struct task_struct *task)
+{
+    if (task && task->root_dir)
+        return task->root_dir;
+    return vfs_root_vnode();
+}
+
+static struct vnode *task_cwd_or_default(struct task_struct *task)
+{
+    if (task && task->cwd)
+        return task->cwd;
+    return task_root_or_default(task);
+}
+
+int register_filesystem(struct filesystem *fs)
+{
+    if (!fs || !fs->name || !fs->setup_mount)
+        return -1;
+
+    for (int i = 0; i < VFS_MAX_FILESYSTEMS; i++)
+    {
+        if (!filesystem_list[i])
+        {
+            filesystem_list[i] = fs;
+            return 0;
+        }
+        if (strcmp_full(filesystem_list[i]->name, fs->name) == 0)
+            return 0;
+    }
+    return -1;
+}
+
+static struct filesystem *find_filesystem(const char *name)
+{
+    if (!name)
+        return 0;
+
+    for (int i = 0; i < VFS_MAX_FILESYSTEMS; i++)
+    {
+        if (filesystem_list[i] &&
+            strcmp_full(filesystem_list[i]->name, name) == 0)
+            return filesystem_list[i];
+    }
+    return 0;
+}
+
+static struct vnode *vfs_parent(struct vnode *node)
+{
+    if (!node)
+        return 0;
+    if (node->mount && node->mount->root == node &&
+        node->mount->mountpoint)
+    {
+        struct vnode *mp = node->mount->mountpoint;
+        return mp->parent ? mp->parent : mp;
+    }
+    if (node->parent)
+        return node->parent;
+    return node;
+}
+
+static struct vnode *vfs_cross_mount(struct vnode *node)
+{
+    while (node && node->mounted && node->mounted->root)
+        node = node->mounted->root;
+    return node;
+}
+
+static int vfs_lookup_from(struct vnode *root, struct vnode *cwd,
+                           const char *pathname, struct vnode **target)
+{
+    struct vnode *node;
+    size_t i = 0;
+
+    if (!target || !pathname_valid(pathname))
+        return -1;
+    if (!root)
+        return -1;
+
+    node = pathname[0] == '/' ? root : (cwd ? cwd : root);
+    node = vfs_cross_mount(node);
+
+    if (pathname[0] == '\0')
+    {
+        *target = node;
+        return 0;
+    }
+
+    while (pathname[i])
+    {
+        char component[VFS_NAME_MAX];
+        size_t n = 0;
+
+        while (pathname[i] == '/')
+            i++;
+        if (!pathname[i])
+            break;
+
+        while (pathname[i] && pathname[i] != '/')
+        {
+            if (n + 1 >= sizeof(component))
+                return -1;
+            component[n++] = pathname[i++];
+        }
+        component[n] = '\0';
+
+        if (strcmp_full(component, ".") == 0)
+            continue;
+        if (strcmp_full(component, "..") == 0)
+        {
+            node = vfs_parent(node);
+            continue;
+        }
+
+        if (!node || node->type != VNODE_DIR || !node->v_ops ||
+            !node->v_ops->lookup)
+            return -1;
+
+        if (node->v_ops->lookup(node, &node, component) < 0)
+            return -1;
+        node = vfs_cross_mount(node);
+    }
+
+    *target = node;
+    return 0;
+}
+
+int vfs_lookup(const char *pathname, struct vnode **target)
+{
+    struct task_struct *task = get_current();
+
+    return vfs_lookup_from(task_root_or_default(task),
+                           task_cwd_or_default(task), pathname, target);
+}
+
+static int vfs_resolve_parent_from(struct vnode *root, struct vnode *cwd,
+                                   const char *pathname, struct vnode **dir,
+                                   char *name, size_t name_size)
+{
+    char parent[VFS_PATH_MAX + 1];
+    size_t len;
+    size_t end;
+    size_t slash;
+    size_t name_len;
+
+    if (!dir || !name || name_size == 0 || !pathname_valid(pathname))
+        return -1;
+
+    len = strlen_simple(pathname);
+    if (len == 0)
+        return -1;
+
+    end = len;
+    while (end > 1 && pathname[end - 1] == '/')
+        end--;
+    if (end == 0 || (end == 1 && pathname[0] == '/'))
+        return -1;
+
+    slash = end;
+    while (slash > 0 && pathname[slash - 1] != '/')
+        slash--;
+
+    name_len = end - slash;
+    if (name_len == 0 || name_len >= name_size)
+        return -1;
+
+    for (size_t i = 0; i < name_len; i++)
+        name[i] = pathname[slash + i];
+    name[name_len] = '\0';
+    if (strcmp_full(name, ".") == 0 || strcmp_full(name, "..") == 0)
+        return -1;
+
+    if (slash == 0)
+    {
+        parent[0] = '\0';
+    }
+    else if (slash == 1 && pathname[0] == '/')
+    {
+        parent[0] = '/';
+        parent[1] = '\0';
+    }
+    else
+    {
+        size_t plen = slash;
+        while (plen > 1 && pathname[plen - 1] == '/')
+            plen--;
+        if (plen > VFS_PATH_MAX)
+            return -1;
+        for (size_t i = 0; i < plen; i++)
+            parent[i] = pathname[i];
+        parent[plen] = '\0';
+    }
+
+    if (vfs_lookup_from(root, cwd, parent, dir) < 0)
+        return -1;
+    if (!*dir || (*dir)->type != VNODE_DIR)
+        return -1;
+    return 0;
+}
+
+static int vfs_alloc_file(struct vnode *node, int flags, struct file **target)
+{
+    struct file *file;
+
+    if (!node || !target || !node->f_ops || !node->f_ops->open)
+        return -1;
+
+    file = (struct file *)zalloc(sizeof(*file));
+    if (!file)
+        return -1;
+
+    file->vnode = node;
+    file->f_ops = node->f_ops;
+    file->flags = flags;
+    file->refcnt = 1;
+    *target = file;
+
+    if (node->f_ops->open(node, target) < 0)
+    {
+        free(file);
+        *target = 0;
+        return -1;
+    }
+    return 0;
+}
+
+static int vfs_open_from(struct vnode *root, struct vnode *cwd,
+                         const char *pathname, int flags,
+                         struct file **target)
+{
+    struct vnode *node = 0;
+
+    if (!target || !pathname_valid(pathname))
+        return -1;
+    *target = 0;
+
+    if (vfs_lookup_from(root, cwd, pathname, &node) < 0)
+    {
+        struct vnode *dir = 0;
+        char name[VFS_NAME_MAX];
+
+        if (!(flags & O_CREAT))
+            return -1;
+        if (vfs_resolve_parent_from(root, cwd, pathname, &dir, name,
+                                    sizeof(name)) < 0)
+            return -1;
+        if (!dir->v_ops || !dir->v_ops->create ||
+            dir->v_ops->create(dir, &node, name) < 0)
+            return -1;
+    }
+
+    return vfs_alloc_file(node, flags, target);
+}
+
+int vfs_open(const char *pathname, int flags, struct file **target)
+{
+    struct task_struct *task = get_current();
+
+    return vfs_open_from(task_root_or_default(task),
+                         task_cwd_or_default(task), pathname, flags, target);
+}
+
+int vfs_close(struct file *file)
+{
+    if (!file)
+        return -1;
+    if (file->refcnt > 1)
+    {
+        file->refcnt--;
+        return 0;
+    }
+    if (!file->f_ops || !file->f_ops->close)
+        return -1;
+    return file->f_ops->close(file);
+}
+
+int vfs_read(struct file *file, void *buf, size_t len)
+{
+    if (!file || !file->f_ops || !file->f_ops->read)
+        return -1;
+    return file->f_ops->read(file, buf, len);
+}
+
+int vfs_write(struct file *file, const void *buf, size_t len)
+{
+    if (!file || !file->f_ops || !file->f_ops->write)
+        return -1;
+    return file->f_ops->write(file, buf, len);
+}
+
+static long vfs_lseek64(struct file *file, long offset, int whence)
+{
+    if (!file || !file->f_ops || !file->f_ops->lseek64)
+        return -1;
+    return file->f_ops->lseek64(file, offset, whence);
+}
+
+static int vfs_ioctl(struct file *file, unsigned long request, void *arg)
+{
+    if (!file || !file->f_ops || !file->f_ops->ioctl)
+        return -1;
+    return file->f_ops->ioctl(file, request, arg);
+}
+
+static int vfs_mkdir_from(struct vnode *root, struct vnode *cwd,
+                          const char *pathname)
+{
+    struct vnode *dir = 0;
+    struct vnode *created = 0;
+    char name[VFS_NAME_MAX];
+
+    if (vfs_resolve_parent_from(root, cwd, pathname, &dir, name,
+                                sizeof(name)) < 0)
+        return -1;
+    if (vfs_lookup_from(root, cwd, pathname, &created) == 0)
+        return -1;
+    if (!dir->v_ops || !dir->v_ops->mkdir)
+        return -1;
+    return dir->v_ops->mkdir(dir, &created, name);
+}
+
+int vfs_mkdir(const char *pathname)
+{
+    struct task_struct *task = get_current();
+
+    return vfs_mkdir_from(task_root_or_default(task),
+                          task_cwd_or_default(task), pathname);
+}
+
+static int vfs_mount_from(struct vnode *root, struct vnode *cwd,
+                          const char *target, const char *filesystem)
+{
+    struct filesystem *fs;
+    struct mount *mount;
+    struct vnode *mountpoint = 0;
+
+    if (!pathname_valid(target) || !filesystem)
+        return -1;
+    fs = find_filesystem(filesystem);
+    if (!fs)
+        return -1;
+    if (vfs_lookup_from(root, cwd, target, &mountpoint) < 0)
+        return -1;
+    if (!mountpoint || mountpoint->type != VNODE_DIR ||
+        mountpoint->mounted)
+        return -1;
+
+    mount = (struct mount *)zalloc(sizeof(*mount));
+    if (!mount)
+        return -1;
+    mount->fs = fs;
+    mount->mountpoint = mountpoint;
+    if (fs->setup_mount(fs, mount) < 0 || !mount->root)
+    {
+        free(mount);
+        return -1;
+    }
+    mount->root->mount = mount;
+    mount->root->parent = mount->root;
+    mountpoint->mounted = mount;
+    mount->next = mount_list;
+    mount_list = mount;
+    return 0;
+}
+
+int vfs_mount(const char *target, const char *filesystem)
+{
+    struct task_struct *task = get_current();
+
+    return vfs_mount_from(task_root_or_default(task),
+                          task_cwd_or_default(task), target, filesystem);
+}
+
+struct tmpfs_node
+{
+    int type;
+    char name[TMPFS_NAME_MAX + 1];
+    struct vnode *entry[TMPFS_MAX_DIR_ENTRY];
+    char *data;
+    size_t size;
+};
+
+static int tmpfs_open(struct vnode *file_node, struct file **target);
+static int tmpfs_close(struct file *file);
+static int tmpfs_read(struct file *file, void *buf, size_t len);
+static int tmpfs_write(struct file *file, const void *buf, size_t len);
+static long regular_lseek64(struct file *file, long offset, int whence);
+static int no_ioctl(struct file *file, unsigned long request, void *arg);
+static int tmpfs_lookup(struct vnode *dir_node, struct vnode **target,
+                        const char *component_name);
+static int tmpfs_create(struct vnode *dir_node, struct vnode **target,
+                        const char *component_name);
+static int tmpfs_mkdir(struct vnode *dir_node, struct vnode **target,
+                       const char *component_name);
+
+static struct file_operations tmpfs_file_ops = {
+    tmpfs_open, tmpfs_close, tmpfs_read, tmpfs_write,
+    regular_lseek64, no_ioctl};
+static struct vnode_operations tmpfs_vnode_ops = {
+    tmpfs_lookup, tmpfs_create, tmpfs_mkdir};
+
+static struct vnode *tmpfs_create_vnode(int type, const char *name,
+                                        struct vnode *parent,
+                                        struct mount *mount)
+{
+    struct vnode *vnode = (struct vnode *)zalloc(sizeof(*vnode));
+    struct tmpfs_node *node = (struct tmpfs_node *)zalloc(sizeof(*node));
+
+    if (!vnode || !node)
+    {
+        if (vnode)
+            free(vnode);
+        if (node)
+            free(node);
+        return 0;
+    }
+
+    node->type = type;
+    if (name)
+        copy_name(node->name, sizeof(node->name), name);
+    vnode->mount = mount;
+    vnode->parent = parent ? parent : vnode;
+    vnode->v_ops = &tmpfs_vnode_ops;
+    vnode->f_ops = &tmpfs_file_ops;
+    vnode->internal = node;
+    vnode->type = type == VNODE_DIR ? VNODE_DIR : VNODE_FILE;
+    return vnode;
+}
+
+static int tmpfs_setup_mount(struct filesystem *fs, struct mount *mount)
+{
+    (void)fs;
+    mount->root = tmpfs_create_vnode(VNODE_DIR, "", 0, mount);
+    return mount->root ? 0 : -1;
+}
+
+static int tmpfs_open(struct vnode *file_node, struct file **target)
+{
+    if (!file_node || !target || !*target)
+        return -1;
+    (*target)->vnode = file_node;
+    (*target)->f_ops = &tmpfs_file_ops;
+    (*target)->f_pos = 0;
+    return 0;
+}
+
+static int tmpfs_close(struct file *file)
+{
+    free(file);
+    return 0;
+}
+
+static int tmpfs_read(struct file *file, void *buf, size_t len)
+{
+    struct tmpfs_node *node;
+    size_t readable;
+
+    if (!file || !buf)
+        return -1;
+    node = (struct tmpfs_node *)file->vnode->internal;
+    if (!node || node->type != VNODE_FILE)
+        return -1;
+    if (!node->data || file->f_pos >= node->size || len == 0)
+        return 0;
+
+    readable = node->size - file->f_pos;
+    if (len > readable)
+        len = readable;
+    memcpy(buf, node->data + file->f_pos, len);
+    file->f_pos += len;
+    return (int)len;
+}
+
+static int tmpfs_write(struct file *file, const void *buf, size_t len)
+{
+    struct tmpfs_node *node;
+    size_t writable;
+
+    if (!file || (!buf && len))
+        return -1;
+    node = (struct tmpfs_node *)file->vnode->internal;
+    if (!node || node->type != VNODE_FILE)
+        return -1;
+    if (len == 0)
+        return 0;
+    if (file->f_pos >= TMPFS_MAX_FILE_SIZE)
+        return 0;
+    if (!node->data)
+    {
+        node->data = (char *)zalloc(TMPFS_MAX_FILE_SIZE);
+        if (!node->data)
+            return -1;
+    }
+
+    writable = TMPFS_MAX_FILE_SIZE - file->f_pos;
+    if (len > writable)
+        len = writable;
+    memcpy(node->data + file->f_pos, buf, len);
+    file->f_pos += len;
+    if (file->f_pos > node->size)
+        node->size = file->f_pos;
+    return (int)len;
+}
+
+static long regular_lseek64(struct file *file, long offset, int whence)
+{
+    if (!file || whence != SEEK_SET || offset < 0)
+        return -1;
+    file->f_pos = (size_t)offset;
+    return offset;
+}
+
+static int no_ioctl(struct file *file, unsigned long request, void *arg)
+{
+    (void)file;
+    (void)request;
+    (void)arg;
+    return -1;
+}
+
+static int tmpfs_lookup(struct vnode *dir_node, struct vnode **target,
+                        const char *component_name)
+{
+    struct tmpfs_node *dir;
+
+    if (!dir_node || !target || !component_name)
+        return -1;
+    dir = (struct tmpfs_node *)dir_node->internal;
+    if (!dir || dir->type != VNODE_DIR)
+        return -1;
+
+    for (int i = 0; i < TMPFS_MAX_DIR_ENTRY; i++)
+    {
+        struct vnode *child = dir->entry[i];
+        struct tmpfs_node *node;
+
+        if (!child)
+            continue;
+        node = (struct tmpfs_node *)child->internal;
+        if (node && strcmp_full(node->name, component_name) == 0)
+        {
+            *target = child;
+            return 0;
+        }
+    }
+    return -1;
+}
+
+static int tmpfs_add_child(struct vnode *dir_node, struct vnode **target,
+                           const char *component_name, int type)
+{
+    struct tmpfs_node *dir;
+
+    if (!dir_node || !target || vfs_name_too_long(component_name,
+                                                  TMPFS_NAME_MAX))
+        return -1;
+    dir = (struct tmpfs_node *)dir_node->internal;
+    if (!dir || dir->type != VNODE_DIR)
+        return -1;
+    if (tmpfs_lookup(dir_node, target, component_name) == 0)
+        return -1;
+
+    for (int i = 0; i < TMPFS_MAX_DIR_ENTRY; i++)
+    {
+        if (!dir->entry[i])
+        {
+            struct vnode *child =
+                tmpfs_create_vnode(type, component_name, dir_node,
+                                   dir_node->mount);
+            if (!child)
+                return -1;
+            dir->entry[i] = child;
+            *target = child;
+            return 0;
+        }
+    }
+    return -1;
+}
+
+static int tmpfs_create(struct vnode *dir_node, struct vnode **target,
+                        const char *component_name)
+{
+    return tmpfs_add_child(dir_node, target, component_name, VNODE_FILE);
+}
+
+static int tmpfs_mkdir(struct vnode *dir_node, struct vnode **target,
+                       const char *component_name)
+{
+    return tmpfs_add_child(dir_node, target, component_name, VNODE_DIR);
+}
+
+struct ramfs_node
+{
+    int type;
+    char name[VFS_NAME_MAX];
+    struct vnode *entry[RAMFS_MAX_DIR_ENTRY];
+    const char *data;
+    size_t size;
+};
+
+static int ramfs_open(struct vnode *file_node, struct file **target);
+static int ramfs_close(struct file *file);
+static int ramfs_read(struct file *file, void *buf, size_t len);
+static int readonly_write(struct file *file, const void *buf, size_t len);
+static int ramfs_lookup(struct vnode *dir_node, struct vnode **target,
+                        const char *component_name);
+static int readonly_create(struct vnode *dir_node, struct vnode **target,
+                           const char *component_name);
+static int readonly_mkdir(struct vnode *dir_node, struct vnode **target,
+                          const char *component_name);
+
+static struct file_operations ramfs_file_ops = {
+    ramfs_open, ramfs_close, ramfs_read, readonly_write,
+    regular_lseek64, no_ioctl};
+static struct vnode_operations ramfs_vnode_ops = {
+    ramfs_lookup, readonly_create, readonly_mkdir};
+
+static struct vnode *ramfs_create_vnode(int type, const char *name,
+                                        struct vnode *parent,
+                                        struct mount *mount)
+{
+    struct vnode *vnode = (struct vnode *)zalloc(sizeof(*vnode));
+    struct ramfs_node *node = (struct ramfs_node *)zalloc(sizeof(*node));
+
+    if (!vnode || !node)
+    {
+        if (vnode)
+            free(vnode);
+        if (node)
+            free(node);
+        return 0;
+    }
+
+    node->type = type;
+    if (name)
+        copy_name(node->name, sizeof(node->name), name);
+    vnode->mount = mount;
+    vnode->parent = parent ? parent : vnode;
+    vnode->v_ops = &ramfs_vnode_ops;
+    vnode->f_ops = &ramfs_file_ops;
+    vnode->internal = node;
+    vnode->type = type;
+    return vnode;
+}
+
+static int ramfs_lookup(struct vnode *dir_node, struct vnode **target,
+                        const char *component_name)
+{
+    struct ramfs_node *dir;
+
+    if (!dir_node || !target || !component_name)
+        return -1;
+    dir = (struct ramfs_node *)dir_node->internal;
+    if (!dir || dir->type != VNODE_DIR)
+        return -1;
+
+    for (int i = 0; i < RAMFS_MAX_DIR_ENTRY; i++)
+    {
+        struct vnode *child = dir->entry[i];
+        struct ramfs_node *node;
+
+        if (!child)
+            continue;
+        node = (struct ramfs_node *)child->internal;
+        if (node && strcmp_full(node->name, component_name) == 0)
+        {
+            *target = child;
+            return 0;
+        }
+    }
+    return -1;
+}
+
+static struct vnode *ramfs_get_or_add_dir(struct vnode *dir_node,
+                                          const char *name)
+{
+    struct vnode *target = 0;
+    struct ramfs_node *dir;
+
+    if (ramfs_lookup(dir_node, &target, name) == 0)
+        return target && target->type == VNODE_DIR ? target : 0;
+
+    dir = (struct ramfs_node *)dir_node->internal;
+    if (!dir)
+        return 0;
+
+    for (int i = 0; i < RAMFS_MAX_DIR_ENTRY; i++)
+    {
+        if (!dir->entry[i])
+        {
+            target = ramfs_create_vnode(VNODE_DIR, name, dir_node,
+                                        dir_node->mount);
+            dir->entry[i] = target;
+            return target;
+        }
+    }
+    return 0;
+}
+
+static int ramfs_add_file_path(struct mount *mount, const char *path,
+                               const char *data, size_t size, int is_dir)
+{
+    struct vnode *dir = mount->root;
+    size_t i = 0;
+
+    if (!path || path[0] == '\0' || strcmp_full(path, ".") == 0)
+        return 0;
+    if (path[0] == '.' && path[1] == '/')
+        i = 2;
+    while (path[i] == '/')
+        i++;
+
+    while (path[i])
+    {
+        char component[VFS_NAME_MAX];
+        size_t n = 0;
+        int last;
+
+        while (path[i] && path[i] != '/')
+        {
+            if (n + 1 >= sizeof(component))
+                return -1;
+            component[n++] = path[i++];
+        }
+        component[n] = '\0';
+        while (path[i] == '/')
+            i++;
+        last = path[i] == '\0';
+
+        if (!last || is_dir)
+        {
+            dir = ramfs_get_or_add_dir(dir, component);
+            if (!dir)
+                return -1;
+            if (last)
+                return 0;
+            continue;
+        }
+
+        struct ramfs_node *parent = (struct ramfs_node *)dir->internal;
+        for (int slot = 0; slot < RAMFS_MAX_DIR_ENTRY; slot++)
+        {
+            if (!parent->entry[slot])
+            {
+                struct vnode *file =
+                    ramfs_create_vnode(VNODE_FILE, component, dir, mount);
+                struct ramfs_node *node;
+
+                if (!file)
+                    return -1;
+                node = (struct ramfs_node *)file->internal;
+                node->data = data;
+                node->size = size;
+                parent->entry[slot] = file;
+                return 0;
+            }
+        }
+        return -1;
+    }
+    return 0;
+}
+
+static int cpio_mode_is_dir(int mode)
+{
+    return (mode & 0170000) == 0040000;
+}
+
+static int ramfs_setup_mount(struct filesystem *fs, struct mount *mount)
+{
+    const char *p = (const char *)initrd_start;
+
+    (void)fs;
+    mount->root = ramfs_create_vnode(VNODE_DIR, "", 0, mount);
+    if (!mount->root)
+        return -1;
+
+    while (p && initrd_end && p < (const char *)initrd_end)
+    {
+        const struct cpio_t *hdr = (const struct cpio_t *)p;
+        int namesize;
+        int filesize;
+        int mode;
+        const char *name;
+        const char *data;
+
+        if (memcmp_simple(hdr->magic, "070701", 6) != 0)
+            break;
+
+        namesize = hextoi_simple(hdr->namesize, 8);
+        filesize = hextoi_simple(hdr->filesize, 8);
+        mode = hextoi_simple(hdr->mode, 8);
+        name = p + sizeof(struct cpio_t);
+        data = p + align_int(sizeof(struct cpio_t) + namesize, 4);
+
+        if (strcmp_full(name, "TRAILER!!!") == 0)
+            break;
+        ramfs_add_file_path(mount, name, data, (size_t)filesize,
+                            cpio_mode_is_dir(mode));
+        p = data + align_int(filesize, 4);
+    }
+    return 0;
+}
+
+static int ramfs_open(struct vnode *file_node, struct file **target)
+{
+    if (!file_node || !target || !*target)
+        return -1;
+    (*target)->vnode = file_node;
+    (*target)->f_ops = &ramfs_file_ops;
+    (*target)->f_pos = 0;
+    return 0;
+}
+
+static int ramfs_close(struct file *file)
+{
+    free(file);
+    return 0;
+}
+
+static int ramfs_read(struct file *file, void *buf, size_t len)
+{
+    struct ramfs_node *node;
+    size_t readable;
+
+    if (!file || !buf)
+        return -1;
+    node = (struct ramfs_node *)file->vnode->internal;
+    if (!node || node->type != VNODE_FILE)
+        return -1;
+    if (file->f_pos >= node->size || len == 0)
+        return 0;
+
+    readable = node->size - file->f_pos;
+    if (len > readable)
+        len = readable;
+    memcpy(buf, node->data + file->f_pos, len);
+    file->f_pos += len;
+    return (int)len;
+}
+
+static int readonly_write(struct file *file, const void *buf, size_t len)
+{
+    (void)file;
+    (void)buf;
+    (void)len;
+    return -1;
+}
+
+static int readonly_create(struct vnode *dir_node, struct vnode **target,
+                           const char *component_name)
+{
+    (void)dir_node;
+    (void)target;
+    (void)component_name;
+    return -1;
+}
+
+static int readonly_mkdir(struct vnode *dir_node, struct vnode **target,
+                          const char *component_name)
+{
+    (void)dir_node;
+    (void)target;
+    (void)component_name;
+    return -1;
+}
+
+enum devfs_kind
+{
+    DEVFS_DIR = 0,
+    DEVFS_UART,
+    DEVFS_FB,
+};
+
+struct devfs_node
+{
+    int kind;
+    char name[VFS_NAME_MAX];
+    struct vnode *entry[2];
+};
+
+struct framebuffer_info
+{
+    unsigned int width;
+    unsigned int height;
+    unsigned int bpp;
+};
+
+static int devfs_open(struct vnode *file_node, struct file **target);
+static int devfs_close(struct file *file);
+static int devfs_read(struct file *file, void *buf, size_t len);
+static int devfs_write(struct file *file, const void *buf, size_t len);
+static long devfs_lseek64(struct file *file, long offset, int whence);
+static int devfs_ioctl(struct file *file, unsigned long request, void *arg);
+static int devfs_lookup(struct vnode *dir_node, struct vnode **target,
+                        const char *component_name);
+
+static struct file_operations devfs_file_ops = {
+    devfs_open, devfs_close, devfs_read, devfs_write,
+    devfs_lseek64, devfs_ioctl};
+static struct vnode_operations devfs_vnode_ops = {
+    devfs_lookup, readonly_create, readonly_mkdir};
+
+static struct vnode *devfs_create_vnode(int kind, const char *name,
+                                        struct vnode *parent,
+                                        struct mount *mount)
+{
+    struct vnode *vnode = (struct vnode *)zalloc(sizeof(*vnode));
+    struct devfs_node *node = (struct devfs_node *)zalloc(sizeof(*node));
+
+    if (!vnode || !node)
+    {
+        if (vnode)
+            free(vnode);
+        if (node)
+            free(node);
+        return 0;
+    }
+
+    node->kind = kind;
+    copy_name(node->name, sizeof(node->name), name ? name : "");
+    vnode->mount = mount;
+    vnode->parent = parent ? parent : vnode;
+    vnode->v_ops = &devfs_vnode_ops;
+    vnode->f_ops = &devfs_file_ops;
+    vnode->internal = node;
+    vnode->type = kind == DEVFS_DIR ? VNODE_DIR : VNODE_FILE;
+    return vnode;
+}
+
+static int devfs_setup_mount(struct filesystem *fs, struct mount *mount)
+{
+    struct devfs_node *root_node;
+
+    (void)fs;
+    mount->root = devfs_create_vnode(DEVFS_DIR, "", 0, mount);
+    if (!mount->root)
+        return -1;
+    root_node = (struct devfs_node *)mount->root->internal;
+    root_node->entry[0] = devfs_create_vnode(DEVFS_UART, "uart",
+                                             mount->root, mount);
+    root_node->entry[1] = devfs_create_vnode(DEVFS_FB, "fb",
+                                             mount->root, mount);
+    return root_node->entry[0] && root_node->entry[1] ? 0 : -1;
+}
+
+static int devfs_lookup(struct vnode *dir_node, struct vnode **target,
+                        const char *component_name)
+{
+    struct devfs_node *dir;
+
+    if (!dir_node || !target)
+        return -1;
+    dir = (struct devfs_node *)dir_node->internal;
+    if (!dir || dir->kind != DEVFS_DIR)
+        return -1;
+
+    for (int i = 0; i < 2; i++)
+    {
+        struct vnode *child = dir->entry[i];
+        struct devfs_node *node;
+
+        if (!child)
+            continue;
+        node = (struct devfs_node *)child->internal;
+        if (node && strcmp_full(node->name, component_name) == 0)
+        {
+            *target = child;
+            return 0;
+        }
+    }
+    return -1;
+}
+
+static int devfs_open(struct vnode *file_node, struct file **target)
+{
+    if (!file_node || !target || !*target)
+        return -1;
+    (*target)->vnode = file_node;
+    (*target)->f_ops = &devfs_file_ops;
+    (*target)->f_pos = 0;
+    return 0;
+}
+
+static int devfs_close(struct file *file)
+{
+    free(file);
+    return 0;
+}
+
+static int devfs_read(struct file *file, void *buf, size_t len)
+{
+    struct devfs_node *node;
+
+    if (!file || !buf)
+        return -1;
+    node = (struct devfs_node *)file->vnode->internal;
+    if (!node)
+        return -1;
+    if (node->kind == DEVFS_UART)
+    {
+        char *out = (char *)buf;
+
+        user_console_release_current();
+        for (size_t i = 0; i < len; i++)
+            out[i] = uart_getc();
+        return (int)len;
+    }
+    return -1;
+}
+
+static int devfs_write(struct file *file, const void *buf, size_t len)
+{
+    struct devfs_node *node;
+
+    if (!file || (!buf && len))
+        return -1;
+    node = (struct devfs_node *)file->vnode->internal;
+    if (!node)
+        return -1;
+
+    if (node->kind == DEVFS_UART)
+    {
+        const char *in = (const char *)buf;
+        struct task_struct *current = get_current();
+
+        for (size_t i = 0; i < len; i++)
+        {
+            user_console_wait_turn(current);
+            uart_putc(in[i]);
+            if (in[i] == '\n' || in[i] == '\r')
+                user_console_release_current();
+        }
+        return (int)len;
+    }
+    if (node->kind == DEVFS_FB)
+    {
+        long written = video_fb_write((unsigned long)file->f_pos, buf,
+                                      (unsigned long)len);
+        if (written < 0)
+            return -1;
+        file->f_pos += (size_t)written;
+        return (int)written;
+    }
+    return -1;
+}
+
+static long devfs_lseek64(struct file *file, long offset, int whence)
+{
+    struct devfs_node *node;
+
+    if (!file || whence != SEEK_SET || offset < 0)
+        return -1;
+    node = (struct devfs_node *)file->vnode->internal;
+    if (!node || node->kind != DEVFS_FB)
+        return -1;
+    file->f_pos = (size_t)offset;
+    return offset;
+}
+
+static int devfs_ioctl(struct file *file, unsigned long request, void *arg)
+{
+    struct devfs_node *node;
+    struct framebuffer_info *info = (struct framebuffer_info *)arg;
+
+    if (!file || !arg || request != FB_IOCTL_GET_INFO)
+        return -1;
+    node = (struct devfs_node *)file->vnode->internal;
+    if (!node || node->kind != DEVFS_FB)
+        return -1;
+    return video_fb_get_info(&info->width, &info->height, &info->bpp);
+}
+
+static struct filesystem tmpfs_fs = {"tmpfs", tmpfs_setup_mount};
+static struct filesystem ramfs_fs = {"ramfs", ramfs_setup_mount};
+static struct filesystem devfs_fs = {"devfs", devfs_setup_mount};
+
+static int vfs_init(void)
+{
+    rootfs = (struct mount *)zalloc(sizeof(*rootfs));
+    if (!rootfs)
+        return -1;
+
+    if (register_filesystem(&tmpfs_fs) < 0 ||
+        register_filesystem(&ramfs_fs) < 0 ||
+        register_filesystem(&devfs_fs) < 0)
+        return -1;
+
+    rootfs->fs = &tmpfs_fs;
+    if (tmpfs_fs.setup_mount(&tmpfs_fs, rootfs) < 0)
+        return -1;
+    rootfs->root->mount = rootfs;
+    rootfs->root->parent = rootfs->root;
+    mount_list = rootfs;
+
+    if (vfs_mkdir_from(rootfs->root, rootfs->root, "/ramfs") < 0)
+        return -1;
+    if (vfs_mount_from(rootfs->root, rootfs->root, "/ramfs", "ramfs") < 0)
+        return -1;
+    if (vfs_mkdir_from(rootfs->root, rootfs->root, "/dev") < 0)
+        return -1;
+    if (vfs_mount_from(rootfs->root, rootfs->root, "/dev", "devfs") < 0)
+        return -1;
+    return 0;
+}
+
+static void task_close_files(struct task_struct *task)
+{
+    if (!task)
+        return;
+
+    for (int i = 0; i < VFS_MAX_FD; i++)
+    {
+        if (task->files[i])
+        {
+            struct file *file = task->files[i];
+            task->files[i] = 0;
+            vfs_close(file);
+        }
+    }
+}
+
+static void task_retain_files(struct task_struct *task)
+{
+    if (!task)
+        return;
+    for (int i = 0; i < VFS_MAX_FD; i++)
+        if (task->files[i])
+            task->files[i]->refcnt++;
+}
+
+static int task_install_fd(struct task_struct *task, int fd,
+                           struct file *file)
+{
+    if (!task || !file || fd < 0 || fd >= VFS_MAX_FD)
+        return -1;
+    if (task->files[fd])
+        vfs_close(task->files[fd]);
+    task->files[fd] = file;
+    return 0;
+}
+
+static int task_alloc_fd(struct task_struct *task, struct file *file)
+{
+    if (!task || !file)
+        return -1;
+    for (int fd = 0; fd < VFS_MAX_FD; fd++)
+    {
+        if (!task->files[fd])
+        {
+            task->files[fd] = file;
+            return fd;
+        }
+    }
+    return -1;
+}
+
+static struct file *task_get_file(struct task_struct *task, int fd)
+{
+    if (!task || fd < 0 || fd >= VFS_MAX_FD)
+        return 0;
+    return task->files[fd];
+}
+
+static int task_setup_stdio(struct task_struct *task)
+{
+    for (int fd = 0; fd < 3; fd++)
+    {
+        struct file *file = 0;
+
+        if (vfs_open_from(task_root_or_default(task),
+                          task_cwd_or_default(task),
+                          "/dev/uart", 0, &file) < 0)
+            return -1;
+        if (task_install_fd(task, fd, file) < 0)
+        {
+            vfs_close(file);
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static void task_vfs_init_common(struct task_struct *task,
+                                 struct task_struct *parent)
+{
+    if (!task)
+        return;
+    task->root_dir = parent && parent->root_dir ? parent->root_dir
+                                                : vfs_root_vnode();
+    task->cwd = parent && parent->cwd ? parent->cwd : task->root_dir;
+}
+
+static int task_vfs_init_user(struct task_struct *task,
+                              struct task_struct *parent)
+{
+    task_vfs_init_common(task, parent);
+    return task_setup_stdio(task);
+}
+
+static void task_vfs_fork(struct task_struct *child,
+                          struct task_struct *parent)
+{
+    task_vfs_init_common(child, parent);
+    for (int i = 0; i < VFS_MAX_FD; i++)
+        child->files[i] = parent ? parent->files[i] : 0;
+    task_retain_files(child);
+}
+
+static int sys_open(const char *path, int flags)
+{
+    struct task_struct *current = get_current();
+    struct file *file = 0;
+    char pathname[VFS_PATH_MAX + 1];
+    int fd;
+
+    if (!current || copy_user_string(pathname, path, sizeof(pathname)) < 0)
+        return -1;
+    if (vfs_open_from(task_root_or_default(current),
+                      task_cwd_or_default(current), pathname, flags,
+                      &file) < 0)
+        return -1;
+    fd = task_alloc_fd(current, file);
+    if (fd < 0)
+    {
+        vfs_close(file);
+        return -1;
+    }
+    return fd;
+}
+
+static int sys_close(int fd)
+{
+    struct task_struct *current = get_current();
+    struct file *file = task_get_file(current, fd);
+
+    if (!file)
+        return -1;
+    current->files[fd] = 0;
+    return vfs_close(file);
+}
+
+static long sys_read(int fd, void *buf, unsigned long count)
+{
+    struct file *file = task_get_file(get_current(), fd);
+    unsigned long done = 0;
+    char bounce[256];
+
+    if (!file)
+        return -1;
+    if (count == 0)
+        return 0;
+    if (!buf || !user_range_ok(buf, count, USER_ACCESS_WRITE))
+        return -1;
+
+    while (done < count)
+    {
+        unsigned long chunk = count - done;
+        int ret;
+
+        if (chunk > sizeof(bounce))
+            chunk = sizeof(bounce);
+        ret = vfs_read(file, bounce, (size_t)chunk);
+        if (ret < 0)
+            return done ? (long)done : ret;
+        if (ret == 0)
+            break;
+
+        unsigned long sstatus = user_access_begin();
+        memcpy((char *)buf + done, bounce, (size_t)ret);
+        user_access_end(sstatus);
+
+        done += (unsigned long)ret;
+        if ((unsigned long)ret < chunk)
+            break;
+    }
+    return (long)done;
+}
+
+static long sys_write(int fd, const void *buf, unsigned long count)
+{
+    struct file *file = task_get_file(get_current(), fd);
+    unsigned long done = 0;
+    char bounce[256];
+
+    if (!file)
+        return -1;
+    if (count == 0)
+        return 0;
+    if (!buf || !user_range_ok(buf, count, USER_ACCESS_READ))
+        return -1;
+
+    while (done < count)
+    {
+        unsigned long chunk = count - done;
+        int ret;
+
+        if (chunk > sizeof(bounce))
+            chunk = sizeof(bounce);
+
+        unsigned long sstatus = user_access_begin();
+        memcpy(bounce, (const char *)buf + done, (size_t)chunk);
+        user_access_end(sstatus);
+
+        ret = vfs_write(file, bounce, (size_t)chunk);
+        if (ret < 0)
+            return done ? (long)done : ret;
+        if (ret == 0)
+            break;
+        done += (unsigned long)ret;
+        if ((unsigned long)ret < chunk)
+            break;
+    }
+    return (long)done;
+}
+
+static int sys_mkdir(const char *path, unsigned int mode)
+{
+    struct task_struct *current = get_current();
+    char pathname[VFS_PATH_MAX + 1];
+
+    (void)mode;
+    if (!current || copy_user_string(pathname, path, sizeof(pathname)) < 0)
+        return -1;
+    return vfs_mkdir_from(task_root_or_default(current),
+                          task_cwd_or_default(current), pathname);
+}
+
+static int sys_mount(const char *src, const char *target,
+                     const char *filesystem, unsigned long flags,
+                     const void *data)
+{
+    struct task_struct *current = get_current();
+    char target_path[VFS_PATH_MAX + 1];
+    char fs_name[VFS_NAME_MAX];
+
+    (void)src;
+    (void)flags;
+    (void)data;
+    if (!current ||
+        copy_user_string(target_path, target, sizeof(target_path)) < 0 ||
+        copy_user_string(fs_name, filesystem, sizeof(fs_name)) < 0)
+        return -1;
+    return vfs_mount_from(task_root_or_default(current),
+                          task_cwd_or_default(current), target_path, fs_name);
+}
+
+static int sys_chdir(const char *path)
+{
+    struct task_struct *current = get_current();
+    struct vnode *target = 0;
+    char pathname[VFS_PATH_MAX + 1];
+
+    if (!current || copy_user_string(pathname, path, sizeof(pathname)) < 0)
+        return -1;
+    if (vfs_lookup_from(task_root_or_default(current),
+                        task_cwd_or_default(current), pathname, &target) < 0)
+        return -1;
+    if (!target || target->type != VNODE_DIR)
+        return -1;
+    current->cwd = target;
+    return 0;
+}
+
+static long sys_lseek64(int fd, long offset, int whence)
+{
+    struct file *file = task_get_file(get_current(), fd);
+
+    return vfs_lseek64(file, offset, whence);
+}
+
+static int sys_ioctl(int fd, unsigned long request, void *arg)
+{
+    struct file *file = task_get_file(get_current(), fd);
+    unsigned long sstatus;
+    int ret;
+
+    if (!file || !arg ||
+        !user_range_ok(arg, sizeof(struct framebuffer_info),
+                       USER_ACCESS_WRITE))
+        return -1;
+    sstatus = user_access_begin();
+    ret = vfs_ioctl(file, request, arg);
+    user_access_end(sstatus);
+    return ret;
+}
+
+static unsigned long task_ticks_per_sec(void)
+{
+    return timebase_frequency ? timebase_frequency : 10000000UL;
+}
+
+static unsigned long align_up_ul_main(unsigned long x, unsigned long a)
+{
+    return (x + a - 1) & ~(a - 1);
+}
+
+static unsigned long align_down_ul_main(unsigned long x, unsigned long a)
+{
+    return x & ~(a - 1);
+}
+
+static unsigned long prot_to_pte_flags(int prot)
+{
+    unsigned long flags = PROT_USER_BASE;
+
+    if (prot & USER_ACCESS_READ)
+        flags |= PTE_R;
+    if (prot & USER_ACCESS_WRITE)
+        flags |= PTE_R | PTE_W;
+    if (prot & USER_ACCESS_EXEC)
+        flags |= PTE_X;
+
+    return flags;
+}
+
+static int prot_allows_access(int prot, int access)
+{
+    if ((access & USER_ACCESS_EXEC) && !(prot & USER_ACCESS_EXEC))
+        return 0;
+    if ((access & USER_ACCESS_WRITE) && !(prot & USER_ACCESS_WRITE))
+        return 0;
+    if ((access & USER_ACCESS_READ) && !(prot & USER_ACCESS_READ))
+        return 0;
+
+    return 1;
+}
+
+static void vm_area_list_free(struct vm_area *vma)
+{
+    while (vma)
+    {
+        struct vm_area *next = vma->next;
+        free(vma);
+        vma = next;
+    }
+}
+
+static struct vm_area *vm_area_add_backed_to_list(struct vm_area **head,
+                                                  unsigned long start,
+                                                  unsigned long size,
+                                                  int prot,
+                                                  const char *backing,
+                                                  unsigned long backing_size,
+                                                  unsigned long backing_offset)
+{
+    struct vm_area *vma;
+
+    if (!head || size == 0)
+        return 0;
+
+    vma = (struct vm_area *)allocate(sizeof(*vma));
+    if (!vma)
+        return 0;
+
+    vma->start = start;
+    vma->end = start + size;
+    vma->prot = prot;
+    vma->pte_flags = prot_to_pte_flags(prot);
+    vma->backing = backing;
+    vma->backing_size = backing_size;
+    vma->backing_offset = backing_offset;
+    vma->next = *head;
+    *head = vma;
+
+    return vma;
+}
+
+static struct vm_area *vm_area_add_to_list(struct vm_area **head,
+                                           unsigned long start,
+                                           unsigned long size,
+                                           int prot)
+{
+    return vm_area_add_backed_to_list(head, start, size, prot, 0, 0, 0);
+}
+
+static struct vm_area *find_vma(struct task_struct *task,
+                                unsigned long addr,
+                                unsigned long len)
+{
+    struct vm_area *vma;
+
+    if (!task || len == 0 || addr + len < addr)
+        return 0;
+
+    for (vma = task->vmas; vma; vma = vma->next)
+    {
+        if (addr >= vma->start && addr + len <= vma->end)
+            return vma;
+    }
+
+    return 0;
+}
+
+static int vma_overlaps(struct task_struct *task,
+                        unsigned long start,
+                        unsigned long end)
+{
+    struct vm_area *vma;
+
+    if (!task || start >= end)
+        return 1;
+
+    for (vma = task->vmas; vma; vma = vma->next)
+    {
+        if (!(end <= vma->start || start >= vma->end))
+            return 1;
+    }
+
+    return 0;
+}
+
+static unsigned long *alloc_zero_page(void)
+{
+    unsigned long *page = (unsigned long *)allocate(PAGE_SIZE);
+
+    if (page)
+        memset(page, 0, PAGE_SIZE);
+
+    return page;
+}
+
+static int pte_is_leaf(unsigned long pte)
+{
+    return (pte & PTE_V) && (pte & (PTE_R | PTE_W | PTE_X));
+}
+
+static unsigned long *page_table_pte(unsigned long *pgd,
+                                     unsigned long va,
+                                     int create)
+{
+    unsigned long vpn[3] = {
+        PTE_INDEX(va, PTE_SHIFT),
+        PTE_INDEX(va, PMD_SHIFT),
+        PTE_INDEX(va, PGD_SHIFT),
+    };
+    unsigned long *table = pgd;
+
+    if (!pgd)
+        return 0;
+
+    for (int level = 2; level > 0; level--)
+    {
+        unsigned long *pte = &table[vpn[level]];
+
+        if (!(*pte & PTE_V))
+        {
+            unsigned long *next;
+
+            if (!create)
+                return 0;
+
+            next = alloc_zero_page();
+            if (!next)
+                return 0;
+
+            *pte = MAKE_PTE(virt_to_phys_addr((unsigned long)next), PTE_V);
+        }
+        else if (pte_is_leaf(*pte))
+        {
+            return 0;
+        }
+
+        table = (unsigned long *)phys_to_virt_addr(PTE_TO_PA(*pte));
+    }
+
+    return &table[vpn[0]];
+}
+
+static int map_page_in_pgd(unsigned long *pgd,
+                           unsigned long va,
+                           unsigned long pa,
+                           unsigned long flags)
+{
+    unsigned long *pte = page_table_pte(pgd, va, 1);
+
+    if (!pte)
+        return -1;
+
+    *pte = MAKE_PTE(pa, flags);
+    return 0;
+}
+
+static int map_pages_in_pgd(unsigned long *pgd,
+                            unsigned long va,
+                            unsigned long size,
+                            unsigned long pa,
+                            unsigned long flags)
+{
+    size = align_up_ul_main(size, PAGE_SIZE);
+
+    for (unsigned long off = 0; off < size; off += PAGE_SIZE)
+    {
+        if (map_page_in_pgd(pgd, va + off, pa + off, flags) < 0)
+            return -1;
+    }
+
+    return 0;
+}
+
+static void *unmap_page_in_pgd(unsigned long *pgd, unsigned long va)
+{
+    unsigned long *pte = page_table_pte(pgd, va, 0);
+    void *page;
+
+    if (!pte || !pte_is_leaf(*pte))
+        return 0;
+
+    page = (void *)phys_to_virt_addr(PTE_TO_PA(*pte));
+    *pte = 0;
+    return page;
+}
+
+static unsigned long *create_user_pgd(void)
+{
+    unsigned long *pgd = alloc_zero_page();
+
+    if (!pgd)
+        return 0;
+
+    for (int i = PT_ENTRIES / 2; i < PT_ENTRIES; i++)
+        pgd[i] = kernel_pgd[i];
+
+    return pgd;
+}
+
+static void free_user_table(unsigned long *table, int level)
+{
+    if (!table)
+        return;
+
+    for (int i = 0; i < PT_ENTRIES; i++)
+    {
+        unsigned long pte = table[i];
+
+        if (!(pte & PTE_V))
+            continue;
+
+        if (pte_is_leaf(pte))
+        {
+            free((void *)phys_to_virt_addr(PTE_TO_PA(pte)));
+        }
+        else if (level > 0)
+        {
+            unsigned long *next =
+                (unsigned long *)phys_to_virt_addr(PTE_TO_PA(pte));
+
+            free_user_table(next, level - 1);
+            free(next);
+        }
+
+        table[i] = 0;
+    }
+}
+
+static void free_user_pgd(unsigned long *pgd)
+{
+    if (!pgd)
+        return;
+
+    for (int i = 0; i < PT_ENTRIES / 2; i++)
+    {
+        unsigned long pte = pgd[i];
+
+        if (!(pte & PTE_V))
+            continue;
+
+        if (pte_is_leaf(pte))
+        {
+            free((void *)phys_to_virt_addr(PTE_TO_PA(pte)));
+        }
+        else
+        {
+            unsigned long *next =
+                (unsigned long *)phys_to_virt_addr(PTE_TO_PA(pte));
+
+            free_user_table(next, 1);
+            free(next);
+        }
+
+        pgd[i] = 0;
+    }
+
+    free(pgd);
+}
+
+static int clone_cow_leaf(unsigned long *dst_pte, unsigned long *src_pte)
+{
+    unsigned long pte;
+    void *page;
+
+    if (!dst_pte || !src_pte || !pte_is_leaf(*src_pte))
+        return -1;
+
+    pte = *src_pte;
+    page = (void *)phys_to_virt_addr(PTE_TO_PA(pte));
+    retain_page(page);
+
+    if (pte & PTE_W)
+    {
+        pte = (pte & ~PTE_W) | PTE_COW;
+        *src_pte = pte;
+    }
+
+    *dst_pte = pte;
+    return 0;
+}
+
+static int clone_user_table(unsigned long *dst, unsigned long *src, int level)
+{
+    if (!dst || !src)
+        return -1;
+
+    for (int i = 0; i < PT_ENTRIES; i++)
+    {
+        unsigned long pte = src[i];
+
+        if (!(pte & PTE_V))
+            continue;
+
+        if (pte_is_leaf(pte))
+        {
+            if (clone_cow_leaf(&dst[i], &src[i]) < 0)
+                return -1;
+        }
+        else if (level > 0)
+        {
+            unsigned long *src_next =
+                (unsigned long *)phys_to_virt_addr(PTE_TO_PA(pte));
+            unsigned long *dst_next = alloc_zero_page();
+
+            if (!dst_next)
+                return -1;
+
+            dst[i] = MAKE_PTE(virt_to_phys_addr((unsigned long)dst_next),
+                              PTE_V);
+            if (clone_user_table(dst_next, src_next, level - 1) < 0)
+                return -1;
+        }
+        else
+        {
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
+static int clone_user_address_space(unsigned long *dst_pgd,
+                                    unsigned long *src_pgd)
+{
+    if (!dst_pgd || !src_pgd)
+        return -1;
+
+    for (int i = 0; i < PT_ENTRIES / 2; i++)
+    {
+        unsigned long pte = src_pgd[i];
+
+        if (!(pte & PTE_V))
+            continue;
+
+        if (pte_is_leaf(pte))
+        {
+            if (clone_cow_leaf(&dst_pgd[i], &src_pgd[i]) < 0)
+                return -1;
+        }
+        else
+        {
+            unsigned long *src_next =
+                (unsigned long *)phys_to_virt_addr(PTE_TO_PA(pte));
+            unsigned long *dst_next = alloc_zero_page();
+
+            if (!dst_next)
+                return -1;
+
+            dst_pgd[i] =
+                MAKE_PTE(virt_to_phys_addr((unsigned long)dst_next), PTE_V);
+            if (clone_user_table(dst_next, src_next, 1) < 0)
+                return -1;
+        }
+    }
+
+    sfence_vma();
+    return 0;
+}
+
+static struct vm_area *clone_vm_area_list(struct vm_area *src)
+{
+    struct vm_area *head = 0;
+    struct vm_area **tail = &head;
+
+    while (src)
+    {
+        struct vm_area *copy = (struct vm_area *)allocate(sizeof(*copy));
+
+        if (!copy)
+        {
+            vm_area_list_free(head);
+            return 0;
+        }
+
+        memcpy(copy, src, sizeof(*copy));
+        copy->next = 0;
+        *tail = copy;
+        tail = &copy->next;
+        src = src->next;
+    }
+
+    return head;
+}
+
+static void switch_address_space(struct task_struct *task)
+{
+    unsigned long *pgd = kernel_pgd;
+
+    if (task && task->kind == TASK_USER && task->pgd)
+        pgd = task->pgd;
+
+    write_satp_pgd(pgd);
+}
+
+static int pte_allows_access(unsigned long pte, int access)
+{
+    if (!pte_is_leaf(pte))
+        return 0;
+    if ((access & USER_ACCESS_EXEC) && !(pte & PTE_X))
+        return 0;
+    if ((access & USER_ACCESS_WRITE) && !(pte & PTE_W))
+        return 0;
+    if ((access & USER_ACCESS_READ) && !(pte & PTE_R))
+        return 0;
+
+    return 1;
+}
+
+static void log_page_fault(const char *tag, unsigned long addr)
+{
+    trap_puts(tag);
+    trap_hex(addr);
+    trap_puts("\n");
+}
+
+static void fill_page_from_vma(struct vm_area *vma, unsigned long va, void *page)
+{
+    unsigned long offset;
+    unsigned long available;
+    size_t n;
+
+    if (!vma || !vma->backing || !page)
+        return;
+
+    offset = vma->backing_offset + (va - vma->start);
+    if (offset < vma->backing_offset || offset >= vma->backing_size)
+        return;
+
+    available = vma->backing_size - offset;
+    n = available < PAGE_SIZE ? (size_t)available : PAGE_SIZE;
+    memcpy(page, vma->backing + offset, n);
+}
+
+static int handle_cow_fault(struct vm_area *vma,
+                            unsigned long *pte,
+                            unsigned long fault_addr)
+{
+    unsigned long old_pte;
+    void *old_page;
+    void *new_page;
+    unsigned long flags;
+
+    if (!vma || !pte || !pte_is_leaf(*pte))
+        return -1;
+    if (!(*pte & PTE_COW) || !(vma->prot & USER_ACCESS_WRITE))
+        return -1;
+
+    old_pte = *pte;
+    old_page = (void *)phys_to_virt_addr(PTE_TO_PA(old_pte));
+    new_page = old_page;
+
+    log_page_fault("[Permission fault]: ", fault_addr);
+
+    if (page_refcount(old_page) > 1)
+    {
+        new_page = allocate(PAGE_SIZE);
+        if (!new_page)
+            return -1;
+
+        memcpy(new_page, old_page, PAGE_SIZE);
+        free(old_page);
+    }
+
+    flags = (PTE_FLAGS(old_pte) | PTE_W) & ~PTE_COW;
+    *pte = MAKE_PTE(virt_to_phys_addr((unsigned long)new_page), flags);
+    sfence_vma();
+    if (vma->prot & USER_ACCESS_EXEC)
+        fence_i();
+    return 0;
+}
+
+static int ensure_user_page(struct task_struct *task,
+                            unsigned long fault_addr,
+                            int access,
+                            int log_fault)
+{
+    unsigned long va = align_down_ul_main(fault_addr, PAGE_SIZE);
+    struct vm_area *vma;
+    unsigned long *pte;
+    void *page;
+
+    if (!task || !task->pgd)
+        return -1;
+
+    vma = find_vma(task, fault_addr, 1);
+    if (!vma || !prot_allows_access(vma->prot, access))
+        return -1;
+
+    pte = page_table_pte(task->pgd, va, 0);
+    if (pte && pte_is_leaf(*pte))
+    {
+        if (pte_allows_access(*pte, access))
+            return 0;
+        if (access & USER_ACCESS_WRITE)
+            return handle_cow_fault(vma, pte, fault_addr);
+        return -1;
+    }
+
+    if (vma->prot == 0)
+        return -1;
+
+    page = allocate(PAGE_SIZE);
+    if (!page)
+        return -1;
+
+    memset(page, 0, PAGE_SIZE);
+    fill_page_from_vma(vma, va, page);
+
+    if (map_page_in_pgd(task->pgd, va, virt_to_phys_addr((unsigned long)page),
+                        vma->pte_flags) < 0)
+    {
+        free(page);
+        return -1;
+    }
+
+    if (log_fault)
+        log_page_fault("[Translation fault]: ", fault_addr);
+
+    sfence_vma();
+    if (vma->prot & USER_ACCESS_EXEC)
+        fence_i();
+    return 0;
+}
+
+static int user_range_access_ok(struct task_struct *task,
+                                unsigned long addr,
+                                unsigned long len,
+                                int access)
+{
+    unsigned long end;
+
+    if (len == 0)
+        return 1;
+    if (!task || task->kind != TASK_USER || addr + len < addr)
+        return 0;
+
+    end = addr + len;
+    for (unsigned long p = align_down_ul_main(addr, PAGE_SIZE);
+         p < end;
+         p += PAGE_SIZE)
+    {
+        if (ensure_user_page(task, p, access, 0) < 0)
+            return 0;
+    }
+
+    return 1;
+}
+
+static void enqueue_task_locked(struct task_struct *task)
+{
+    if (!task)
+        return;
+
+    if (!run_queue)
+    {
+        run_queue = task;
+        task->next = task;
+        return;
+    }
+
+    struct task_struct *tail = run_queue;
+    while (tail->next != run_queue)
+        tail = tail->next;
+
+    tail->next = task;
+    task->next = run_queue;
+}
+
+static void enqueue_task(struct task_struct *task)
+{
+    unsigned long flags = irq_save();
+
+    enqueue_task_locked(task);
+
+    irq_restore(flags);
+}
+
+static void remove_task_from_queue_locked(struct task_struct *task)
+{
+    if (!run_queue || !task)
+        return;
+
+    struct task_struct *prev = run_queue;
+    while (prev->next != task && prev->next != run_queue)
+        prev = prev->next;
+
+    if (prev->next != task)
+        return;
+
+    if (task->next == task)
+    {
+        run_queue = 0;
+    }
+    else
+    {
+        prev->next = task->next;
+        if (run_queue == task)
+            run_queue = task->next;
+    }
+
+    task->next = 0;
+}
+
+static struct task_struct *find_task_locked(int pid)
+{
+    if (!run_queue)
+        return 0;
+
+    struct task_struct *cur = run_queue;
+    do
+    {
+        if (cur->pid == pid)
+            return cur;
+        cur = cur->next;
+    } while (cur != run_queue);
+
+    return 0;
+}
+
+static int task_is_alive(int pid)
+{
+    unsigned long flags = irq_save();
+    struct task_struct *task = find_task_locked(pid);
+    int alive = task && task->state != TASK_ZOMBIE;
+
+    irq_restore(flags);
+    return alive;
+}
+
+static int task_has_child_locked(struct task_struct *parent, long pid)
+{
+    if (!run_queue)
+        return 0;
+
+    struct task_struct *cur = run_queue;
+    do
+    {
+        if (cur->parent == parent && (pid < 0 || cur->pid == pid))
+            return 1;
+        cur = cur->next;
+    } while (cur != run_queue);
+
+    return 0;
+}
+
+static void free_task_storage(struct task_struct *task)
+{
+    task_close_files(task);
+    free_user_vm_resources(task->user_image, task->user_stack, task->vmas,
+                           task->pgd, task->signal_stack);
+    if (task->kernel_stack)
+        free(task->kernel_stack);
+
+    free(task);
+}
+
+static void wake_waiters_locked(int pid)
+{
+    if (!run_queue)
+        return;
+
+    struct task_struct *cur = run_queue;
+    do
+    {
+        if (cur->state == TASK_WAITING &&
+            (cur->waiting_pid < 0 || cur->waiting_pid == pid))
+        {
+            cur->state = TASK_RUNNING;
+        }
+        cur = cur->next;
+    } while (cur != run_queue);
+}
+
+static void mark_task_zombie_locked(struct task_struct *task, int status)
+{
+    if (!task || task->state == TASK_ZOMBIE)
+        return;
+
+    task->exit_status = status;
+    task->state = TASK_ZOMBIE;
+    wake_waiters_locked(task->pid);
+}
+
+static void mark_task_zombie(struct task_struct *task, int status)
+{
+    unsigned long flags = irq_save();
+
+    mark_task_zombie_locked(task, status);
+
+    irq_restore(flags);
+}
+
+static struct task_struct *pick_next_task(struct task_struct *prev)
+{
+    if (!run_queue)
+        return 0;
+
+    struct task_struct *cur = prev && prev->next ? prev->next : run_queue;
+    struct task_struct *start = cur;
+
+    do
+    {
+        if (cur->state == TASK_RUNNING)
+            return cur;
+        cur = cur->next;
+    } while (cur != start);
+
+    return prev && prev->state == TASK_RUNNING ? prev : 0;
+}
+
+static void schedule(void)
+{
+    unsigned long flags = irq_save();
+
+    if (!scheduler_ready || !run_queue)
+    {
+        irq_restore(flags);
+        return;
+    }
+
+    struct task_struct *prev = get_current();
+    struct task_struct *next = pick_next_task(prev);
+
+    if (!next || next == prev)
+    {
+        irq_restore(flags);
+        return;
+    }
+
+    current_task = next;
+    switch_address_space(next);
+    switch_to(prev, next);
+
+    irq_restore(flags);
+}
+
+static void kernel_thread_start(void)
+{
+    struct task_struct *current = get_current();
+
+    local_irq_enable();
+    current->kernel_entry(current->kernel_arg);
+    local_irq_disable();
+
+    mark_task_zombie(current, 0);
+    schedule();
+
+    while (1)
+        ;
+}
+
+static struct task_struct *create_kernel_thread(kernel_thread_fn fn, void *arg)
+{
+    struct task_struct *task = (struct task_struct *)allocate(sizeof(*task));
+    void *stack = allocate(THREAD_STACK_SIZE);
+
+    if (!task || !stack)
+    {
+        if (task)
+            free(task);
+        if (stack)
+            free(stack);
+        return 0;
+    }
+
+    memset(task, 0, sizeof(*task));
+    task->pid = next_pid++;
+    task->state = TASK_RUNNING;
+    task->kind = TASK_KERNEL;
+    task->kernel_stack = stack;
+    task->kernel_entry = fn;
+    task->kernel_arg = arg;
+    task->waiting_pid = -1;
+    task_vfs_init_common(task, get_current());
+    task->thread.ra = (unsigned long)kernel_thread_start;
+    task->thread.sp = ((unsigned long)stack + THREAD_STACK_SIZE) & ~0xFUL;
+
+    enqueue_task(task);
+    return task;
+}
+
+static void user_process_start(void)
+{
+    struct task_struct *current = get_current();
+
+    switch_address_space(current);
+    current->trap_frame->sstatus &= ~SSTATUS_SPP;
+    current->trap_frame->sstatus |= SSTATUS_SPIE;
+    restore_trap_frame(current->trap_frame);
+
+    while (1)
+        ;
+}
+
+static int is_legacy_ecall_demo_program(const char *filename,
+                                        const char *data,
+                                        int filesize)
+{
+    static const unsigned char legacy_prog[] = {
+        0x95, 0x48, 0x73, 0x00, 0x00, 0x00, 0xfd,
+        0x18, 0xe3, 0x1d, 0x10, 0xff, 0x01, 0xa0,
+    };
+
+    if (strcmp_full(filename, "prog.bin") != 0)
+        return 0;
+    if (filesize != (int)sizeof(legacy_prog))
+        return 0;
+
+    return memcmp_simple(data, legacy_prog, (int)sizeof(legacy_prog)) == 0;
+}
+
+static void free_user_vm_resources(void *image,
+                                   void *stack,
+                                   struct vm_area *vmas,
+                                   unsigned long *pgd,
+                                   void *signal_stack)
+{
+    if (pgd)
+        free_user_pgd(pgd);
+    if (!pgd && signal_stack)
+        free(signal_stack);
+    if (image)
+        free(image);
+    if (!pgd && stack)
+        free(stack);
+    if (vmas)
+        vm_area_list_free(vmas);
+}
+
+static int install_user_vm(struct task_struct *task,
+                           const char *data,
+                           int filesize,
+                           void **old_image,
+                           void **old_stack,
+                           struct vm_area **old_vmas,
+                           unsigned long **old_pgd,
+                           void **old_signal_stack)
+{
+    unsigned long image_size;
+    unsigned long program_size;
+    unsigned long *pgd;
+    void *image = 0;
+    void *stack = 0;
+    struct vm_area *vmas = 0;
+
+    if (!task || !data || filesize <= 0)
+        return -1;
+
+    image_size = align_up_ul_main((unsigned long)filesize, PAGE_SIZE);
+    if (image_size == 0)
+        image_size = PAGE_SIZE;
+    program_size = image_size > USER_PROGRAM_REGION_SIZE
+                       ? image_size
+                       : USER_PROGRAM_REGION_SIZE;
+
+    pgd = create_user_pgd();
+
+    if (!pgd)
+    {
+        free_user_vm_resources(image, stack, vmas, pgd, 0);
+        return -1;
+    }
+
+    if (!vm_area_add_backed_to_list(&vmas, USER_CODE_BASE, program_size,
+                                    USER_ACCESS_READ | USER_ACCESS_WRITE |
+                                        USER_ACCESS_EXEC,
+                                    data,
+                                    (unsigned long)filesize, 0) ||
+        !vm_area_add_to_list(&vmas, USER_STACK_BASE, USER_STACK_SIZE,
+                             USER_ACCESS_READ | USER_ACCESS_WRITE))
+    {
+        free_user_vm_resources(image, stack, vmas, pgd, 0);
+        return -1;
+    }
+
+    if (old_image)
+        *old_image = task->user_image;
+    if (old_stack)
+        *old_stack = task->user_stack;
+    if (old_vmas)
+        *old_vmas = task->vmas;
+    if (old_pgd)
+        *old_pgd = task->pgd;
+    if (old_signal_stack)
+        *old_signal_stack = task->signal_stack;
+
+    task->pgd = pgd;
+    task->vmas = vmas;
+    task->mmap_base = USER_MMAP_BASE;
+    task->user_image = 0;
+    task->user_image_size = image_size;
+    task->user_stack = stack;
+    task->user_stack_size = USER_STACK_SIZE;
+    task->signal_stack = 0;
+    task->signal_stack_va = 0;
+
+    return 0;
+}
+
+static struct task_struct *create_user_process(const char *filename,
+                                               struct task_struct *parent)
+{
+    int filesize = 0;
+    const char *data = (const char *)initrd_find(filename, &filesize);
+
+    if (!data)
+        return 0;
+
+    struct task_struct *task = (struct task_struct *)allocate(sizeof(*task));
+    void *kstack = allocate(THREAD_STACK_SIZE);
+
+    if (!task || !kstack)
+    {
+        if (task)
+            free(task);
+        if (kstack)
+            free(kstack);
+        return 0;
+    }
+
+    memset(task, 0, sizeof(*task));
+    task->pid = next_pid++;
+    task->state = TASK_RUNNING;
+    task->kind = TASK_USER;
+    task->parent = parent;
+    task->kernel_stack = kstack;
+    task->legacy_ecall_demo =
+        is_legacy_ecall_demo_program(filename, data, filesize);
+    task->legacy_ecall_count = 0;
+    task->waiting_pid = -1;
+
+    if (install_user_vm(task, data, filesize, 0, 0, 0, 0, 0) < 0)
+    {
+        free(kstack);
+        free(task);
+        return 0;
+    }
+    if (task_vfs_init_user(task, parent) < 0)
+    {
+        task_close_files(task);
+        free_user_vm_resources(task->user_image, task->user_stack,
+                               task->vmas, task->pgd, task->signal_stack);
+        free(kstack);
+        free(task);
+        return 0;
+    }
+
+    struct pt_regs *tf =
+        (struct pt_regs *)((unsigned long)kstack + THREAD_STACK_SIZE -
+                           sizeof(struct pt_regs));
+    tf = (struct pt_regs *)((unsigned long)tf & ~0xFUL);
+    memset(tf, 0, sizeof(*tf));
+    tf->sepc = USER_CODE_BASE;
+    tf->sp = USER_STACK_TOP;
+    tf->sstatus = SSTATUS_SPIE;
+
+    task->trap_frame = tf;
+    task->thread.ra = (unsigned long)user_process_start;
+    task->thread.sp = (unsigned long)tf;
+
+    (void)filesize;
+    enqueue_task(task);
+    return task;
+}
+
+static long fork_current_process(struct pt_regs *regs)
+{
+    struct task_struct *parent = get_current();
+
+    if (!parent || parent->kind != TASK_USER)
+        return -1;
+
+    struct task_struct *child = (struct task_struct *)allocate(sizeof(*child));
+    void *kstack = allocate(THREAD_STACK_SIZE);
+
+    if (!child || !kstack)
+    {
+        if (child)
+            free(child);
+        if (kstack)
+            free(kstack);
+        return -1;
+    }
+
+    memset(child, 0, sizeof(*child));
+    child->pid = next_pid++;
+    child->state = TASK_RUNNING;
+    child->kind = TASK_USER;
+    child->parent = parent;
+    child->kernel_stack = kstack;
+    child->legacy_ecall_demo = parent->legacy_ecall_demo;
+    child->legacy_ecall_count = parent->legacy_ecall_count;
+    child->waiting_pid = -1;
+
+    memcpy(child->signal_handlers, parent->signal_handlers,
+           sizeof(child->signal_handlers));
+    task_vfs_fork(child, parent);
+
+    child->pgd = create_user_pgd();
+    child->vmas = clone_vm_area_list(parent->vmas);
+    child->mmap_base = parent->mmap_base;
+    child->user_image = parent->user_image;
+    child->user_image_size = parent->user_image_size;
+    child->user_stack = 0;
+    child->user_stack_size = parent->user_stack_size;
+
+    if (child->user_image)
+        retain_page(child->user_image);
+
+    if (!child->pgd || (parent->vmas && !child->vmas) ||
+        clone_user_address_space(child->pgd, parent->pgd) < 0)
+    {
+        sfence_vma();
+        task_close_files(child);
+        free_user_vm_resources(child->user_image, child->user_stack,
+                               child->vmas, child->pgd,
+                               child->signal_stack);
+        free(kstack);
+        free(child);
+        return -1;
+    }
+
+    struct pt_regs *child_tf =
+        (struct pt_regs *)((unsigned long)kstack + THREAD_STACK_SIZE -
+                           sizeof(struct pt_regs));
+    child_tf = (struct pt_regs *)((unsigned long)child_tf & ~0xFUL);
+    memcpy(child_tf, regs, sizeof(*child_tf));
+    child_tf->sepc = regs->sepc + 4;
+    child_tf->a0 = 0;
+
+    child->trap_frame = child_tf;
+    child->thread.ra = (unsigned long)user_process_start;
+    child->thread.sp = (unsigned long)child_tf;
+
+    enqueue_task(child);
+    return child->pid;
+}
+
+static void user_console_release_current(void);
+
+static long wait_for_child(long pid)
+{
+    struct task_struct *current = get_current();
+
+    user_console_release_current();
+
+    while (1)
+    {
+        unsigned long flags = irq_save();
+        struct task_struct *zombie = 0;
+        int done_pid = -1;
+
+        if (!task_has_child_locked(current, pid))
+        {
+            irq_restore(flags);
+            return -1;
+        }
+
+        if (run_queue)
+        {
+            struct task_struct *cur = run_queue;
+            do
+            {
+                struct task_struct *next = cur->next;
+                if (cur->parent == current &&
+                    (pid < 0 || cur->pid == pid) &&
+                    cur->state == TASK_ZOMBIE)
+                {
+                    done_pid = cur->pid;
+                    zombie = cur;
+                    remove_task_from_queue_locked(cur);
+                    break;
+                }
+                cur = next;
+            } while (run_queue && cur != run_queue);
+        }
+
+        if (zombie)
+        {
+            irq_restore(flags);
+            free_task_storage(zombie);
+            return done_pid;
+        }
+
+        current->waiting_pid = pid;
+        current->state = TASK_WAITING;
+        irq_restore(flags);
+
+        schedule();
+
+        flags = irq_save();
+        current->state = TASK_RUNNING;
+        current->waiting_pid = -1;
+        irq_restore(flags);
+    }
+}
+
+static int user_console_owner_pid = -1;
+
+static void user_console_release_pid(int pid)
+{
+    if (user_console_owner_pid == pid)
+        user_console_owner_pid = -1;
+}
+
+static void user_console_release_current(void)
+{
+    struct task_struct *current = get_current();
+
+    if (current)
+        user_console_release_pid(current->pid);
+}
+
+static void user_console_wait_turn(struct task_struct *current)
+{
+    if (!current || current->kind != TASK_USER)
+        return;
+
+    while (user_console_owner_pid >= 0 &&
+           user_console_owner_pid != current->pid)
+    {
+        if (!task_is_alive(user_console_owner_pid))
+        {
+            user_console_owner_pid = -1;
+            break;
+        }
+
+        schedule();
+    }
+
+    user_console_owner_pid = current->pid;
+}
+
+static void process_exit_current(int status)
+{
+    struct task_struct *current = get_current();
+
+    user_console_release_current();
+    task_close_files(current);
+    mark_task_zombie(current, status);
+    schedule();
+
+    while (1)
+        ;
+}
+
+static int stop_task(long pid)
+{
+    unsigned long flags = irq_save();
+    struct task_struct *task = find_task_locked((int)pid);
+
+    if (!task || task == &boot_task)
+    {
+        irq_restore(flags);
+        return -1;
+    }
+
+    if (task == get_current())
+    {
+        irq_restore(flags);
+        process_exit_current(-1);
+        return 0;
+    }
+
+    user_console_release_pid(task->pid);
+    mark_task_zombie_locked(task, -1);
+    irq_restore(flags);
+
+    return 0;
+}
+
+static void process_sleep_usec(unsigned int usec)
+{
+    struct task_struct *current = get_current();
+    unsigned long ticks =
+        ((unsigned long)usec * task_ticks_per_sec() + 999999UL) / 1000000UL;
+    unsigned long flags;
+
+    user_console_release_current();
+
+    flags = irq_save();
+    current->wakeup_tick = read_time() + ticks;
+    current->state = TASK_SLEEPING;
+    irq_restore(flags);
+
+    schedule();
+
+    flags = irq_save();
+    current->state = TASK_RUNNING;
+    current->wakeup_tick = 0;
+    irq_restore(flags);
+}
+
+static void process_wake_sleepers(void)
+{
+    unsigned long flags = irq_save();
+
+    if (!run_queue)
+    {
+        irq_restore(flags);
+        return;
+    }
+
+    unsigned long now = read_time();
+    struct task_struct *cur = run_queue;
+
+    do
+    {
+        if (cur->state == TASK_SLEEPING &&
+            cur->wakeup_tick && now >= cur->wakeup_tick)
+        {
+            cur->state = TASK_RUNNING;
+            cur->wakeup_tick = 0;
+        }
+        cur = cur->next;
+    } while (cur != run_queue);
+
+    irq_restore(flags);
+}
+
+static void kill_zombies(void)
+{
+    while (1)
+    {
+        unsigned long flags = irq_save();
+        struct task_struct *victim = 0;
+
+        if (run_queue)
+        {
+            struct task_struct *cur = run_queue;
+            do
+            {
+                if (cur != get_current() && cur->state == TASK_ZOMBIE &&
+                    (!cur->parent || cur->parent->state == TASK_ZOMBIE) &&
+                    !task_has_child_locked(cur, -1))
+                {
+                    victim = cur;
+                    remove_task_from_queue_locked(cur);
+                    break;
+                }
+                cur = cur->next;
+            } while (cur != run_queue);
+        }
+
+        irq_restore(flags);
+
+        if (!victim)
+            return;
+
+        free_task_storage(victim);
+    }
+}
+
+static void idle_thread(void *arg)
+{
+    (void)arg;
+
+    while (1)
+    {
+        kill_zombies();
+        uart_pump_tx();
+        schedule();
+        if (console_tx_pending())
+            continue;
+        local_irq_enable();
+        asm volatile("wfi");
+    }
+}
+
+static int process_exec_foreground(const char *filename)
+{
+    struct task_struct *child = create_user_process(filename, get_current());
+
+    if (!child)
+    {
+        console_puts_async("Failed to exec user program!\n");
+        return -1;
+    }
+
+    return (int)wait_for_child(child->pid);
+}
+
+static int exec_user_program(const char *filename)
+{
+    return process_exec_foreground(filename);
+}
+
+static int user_range_ok(const void *ptr, unsigned long len, int access)
+{
+    struct task_struct *current = get_current();
+
+    if (!ptr)
+        return 0;
+
+    return user_range_access_ok(current, (unsigned long)ptr, len, access);
+}
+
+static int copy_user_string(char *dst, const char *src, size_t max)
+{
+    unsigned long base = (unsigned long)src;
+
+    if (!dst || !src || max == 0)
+        return -1;
+
+    for (size_t i = 0; i + 1 < max; i++)
+    {
+        unsigned long addr = base + i;
+        const char *p;
+        unsigned long sstatus;
+
+        if (addr < base)
+            return -1;
+
+        p = (const char *)addr;
+        if (!user_range_ok(p, 1, USER_ACCESS_READ))
+            return -1;
+
+        sstatus = user_access_begin();
+        dst[i] = *p;
+        user_access_end(sstatus);
+        if (dst[i] == '\0')
+            return 0;
+    }
+
+    dst[max - 1] = '\0';
+    return -1;
+}
+
+enum
+{
+    SYS_GETPID = 0,
+    SYS_UART_READ = 1,
+    SYS_UART_WRITE = 2,
+    SYS_EXEC = 3,
+    SYS_FORK = 4,
+    SYS_WAITPID = 5,
+    SYS_EXIT = 6,
+    SYS_STOP = 7,
+    SYS_DISPLAY = 8,
+    SYS_USLEEP = 9,
+    SYS_SIGNAL = 10,
+    SYS_SIGRETURN = 11,
+    SYS_KILL = 12,
+    SYS_MMAP = 13,
+    SYS_OPEN = 14,
+    SYS_CLOSE = 15,
+    SYS_READ = 16,
+    SYS_WRITE = 17,
+    SYS_MKDIR = 18,
+    SYS_MOUNT = 19,
+    SYS_CHDIR = 20,
+    SYS_LSEEK64 = 21,
+    SYS_IOCTL = 22,
+    SYS_LEGACY_EXIT = 93,
+};
+
+static long sys_uart_read(char *buf, long count)
+{
+    user_console_release_current();
+
+    if (count < 0)
+        return -1;
+    if (count == 0)
+        return 0;
+    if (!user_range_ok(buf, (unsigned long)count, USER_ACCESS_WRITE))
+        return -1;
+
+    for (long i = 0; i < count; i++)
+    {
+        unsigned long sstatus;
+        char c = uart_getc();
+
+        sstatus = user_access_begin();
+        buf[i] = c;
+        user_access_end(sstatus);
+    }
+
+    return count;
+}
+
+static long sys_uart_write(const char *buf, long count)
+{
+    struct task_struct *current = get_current();
+
+    if (count < 0)
+        return -1;
+    if (count == 0)
+        return 0;
+    if (!user_range_ok(buf, (unsigned long)count, USER_ACCESS_READ))
+        return -1;
+
+    for (long i = 0; i < count; i++)
+    {
+        unsigned long sstatus;
+        char c;
+
+        sstatus = user_access_begin();
+        c = buf[i];
+        user_access_end(sstatus);
+
+        user_console_wait_turn(current);
+        uart_putc(c);
+
+        if (c == '\n' || c == '\r')
+            user_console_release_current();
+    }
+
+    return count;
+}
+
+static unsigned long choose_mmap_base(struct task_struct *task,
+                                      unsigned long hint,
+                                      unsigned long length)
+{
+    unsigned long base;
+
+    if (hint && (hint & (PAGE_SIZE - 1)) == 0 &&
+        hint >= USER_MMAP_BASE &&
+        hint + length <= USER_MMAP_END &&
+        !vma_overlaps(task, hint, hint + length))
+    {
+        return hint;
+    }
+
+    base = task->mmap_base;
+    if (base < USER_MMAP_BASE || base >= USER_MMAP_END)
+        base = USER_MMAP_BASE;
+
+    base = align_up_ul_main(base, PAGE_SIZE);
+    while (base + length <= USER_MMAP_END)
+    {
+        if (!vma_overlaps(task, base, base + length))
+        {
+            task->mmap_base = base + length;
+            return base;
+        }
+
+        base += PAGE_SIZE;
+    }
+
+    return 0;
+}
+
+static int populate_vma_pages(struct task_struct *task, struct vm_area *vma)
+{
+    int access;
+
+    if (!task || !vma)
+        return -1;
+    if (vma->prot == 0)
+        return 0;
+
+    if (vma->prot & USER_ACCESS_WRITE)
+        access = USER_ACCESS_WRITE;
+    else if (vma->prot & USER_ACCESS_READ)
+        access = USER_ACCESS_READ;
+    else
+        access = USER_ACCESS_EXEC;
+
+    for (unsigned long va = vma->start; va < vma->end; va += PAGE_SIZE)
+    {
+        if (ensure_user_page(task, va, access, 0) < 0)
+            return -1;
+    }
+
+    sfence_vma();
+    return 0;
+}
+
+static long sys_mmap(void *addr, unsigned long length, int prot, int flags)
+{
+    struct task_struct *current = get_current();
+    unsigned long size;
+    unsigned long base;
+    struct vm_area *vma;
+
+    if (!current || current->kind != TASK_USER)
+        return -1;
+    if (!(flags & MAP_ANONYMOUS))
+        return -1;
+    if (prot & ~(USER_ACCESS_READ | USER_ACCESS_WRITE | USER_ACCESS_EXEC))
+        return -1;
+
+    size = align_up_ul_main(length, PAGE_SIZE);
+    if (size == 0 || size > USER_MMAP_END - USER_MMAP_BASE)
+        return -1;
+
+    base = choose_mmap_base(current, (unsigned long)addr, size);
+    if (!base)
+        return -1;
+
+    vma = vm_area_add_to_list(&current->vmas, base, size, prot);
+    if (!vma)
+        return -1;
+
+    if ((flags & MAP_POPULATE) && populate_vma_pages(current, vma) < 0)
+        return -1;
+
+    return (long)base;
+}
+
+static int sys_exec(struct pt_regs *regs, const char *path)
+{
+    char filename[128];
+    int filesize = 0;
+    const char *data;
+    struct task_struct *current = get_current();
+    void *old_image;
+    void *old_stack;
+    void *old_signal_stack;
+    struct vm_area *old_vmas;
+    unsigned long *old_pgd;
+
+    if (copy_user_string(filename, path, sizeof(filename)) < 0)
+        return -1;
+
+    data = (const char *)initrd_find(filename, &filesize);
+    if (!data)
+        return -1;
+
+    if (install_user_vm(current, data, filesize, &old_image, &old_stack,
+                        &old_vmas, &old_pgd, &old_signal_stack) < 0)
+        return -1;
+
+    current->legacy_ecall_demo =
+        is_legacy_ecall_demo_program(filename, data, filesize);
+    current->legacy_ecall_count = 0;
+
+    memset(regs, 0, sizeof(*regs));
+    regs->sepc = USER_CODE_BASE;
+    regs->sp = USER_STACK_TOP;
+    regs->sstatus = SSTATUS_SPIE;
+    current->trap_frame = regs;
+
+    switch_address_space(current);
+    free_user_vm_resources(old_image, old_stack, old_vmas, old_pgd,
+                           old_signal_stack);
+    return 0;
+}
+
+static int first_pending_signal(struct task_struct *task)
+{
+    for (int i = 1; i < MAX_SIGNAL; i++)
+    {
+        if (task->pending_signals & (1UL << i))
+            return i;
+    }
+
+    return 0;
+}
+
+static void deliver_signal_if_needed(struct pt_regs *regs)
+{
+    struct task_struct *current = get_current();
+
+    if (!current || current->kind != TASK_USER || current->in_signal)
+        return;
+    if (regs->sstatus & SSTATUS_SPP)
+        return;
+
+    int signum = first_pending_signal(current);
+    if (!signum)
+        return;
+
+    current->pending_signals &= ~(1UL << signum);
+
+    unsigned long handler = current->signal_handlers[signum];
+    if (!handler)
+    {
+        process_exit_current(128 + signum);
+        return;
+    }
+
+    void *sig_stack = allocate(PAGE_SIZE);
+    if (!sig_stack)
+    {
+        process_exit_current(128 + signum);
+        return;
+    }
+
+    memset(sig_stack, 0, PAGE_SIZE);
+    if (!vm_area_add_to_list(&current->vmas, USER_SIGNAL_STACK_BASE, PAGE_SIZE,
+                             USER_ACCESS_READ | USER_ACCESS_WRITE |
+                                 USER_ACCESS_EXEC) ||
+        map_page_in_pgd(current->pgd, USER_SIGNAL_STACK_BASE,
+                        virt_to_phys_addr((unsigned long)sig_stack),
+                        PROT_USER_RWX) < 0)
+    {
+        free(sig_stack);
+        process_exit_current(128 + signum);
+        return;
+    }
+    sfence_vma();
+
+    current->saved_signal_frame = *regs;
+    current->signal_stack = sig_stack;
+    current->signal_stack_va = USER_SIGNAL_STACK_BASE;
+    current->in_signal = 1;
+
+    unsigned long top = USER_SIGNAL_STACK_TOP & ~0xFUL;
+    unsigned int *trampoline =
+        (unsigned int *)((unsigned long)sig_stack + PAGE_SIZE - 8);
+    trampoline[0] = 0x00b00893U; /* addi a7, zero, 11 */
+    trampoline[1] = 0x00000073U; /* ecall */
+    asm volatile("fence.i" ::: "memory");
+
+    regs->sepc = handler;
+    regs->ra = top - 8;
+    regs->sp = top - 256;
+    regs->a0 = (unsigned long)signum;
+}
+
+static void sys_sigreturn(struct pt_regs *regs)
+{
+    struct task_struct *current = get_current();
+
+    if (!current || !current->in_signal)
+        return;
+
+    trap_puts("[Signal] sigreturn\n");
+
+    *regs = current->saved_signal_frame;
+    current->in_signal = 0;
+
+    if (current->signal_stack)
+    {
+        void *page = unmap_page_in_pgd(current->pgd,
+                                       current->signal_stack_va);
+        sfence_vma();
+        if (page)
+            free(page);
+        else
+            free(current->signal_stack);
+        current->signal_stack = 0;
+        current->signal_stack_va = 0;
+    }
+}
+
+static int sys_kill(long pid, int signum)
+{
+    unsigned long flags;
+    struct task_struct *task;
+
+    if (signum <= 0 || signum >= MAX_SIGNAL)
+        return -1;
+
+    flags = irq_save();
+    task = find_task_locked((int)pid);
+    if (!task || task->kind != TASK_USER)
+    {
+        irq_restore(flags);
+        return -1;
+    }
+
+    if (task->signal_handlers[signum])
+    {
+        task->pending_signals |= (1UL << signum);
+        if (task->state == TASK_SLEEPING || task->state == TASK_WAITING)
+            task->state = TASK_RUNNING;
+    }
+    else
+    {
+        user_console_release_pid(task->pid);
+        mark_task_zombie_locked(task, 128 + signum);
+    }
+
+    irq_restore(flags);
+    return 0;
+}
+
+static int handle_legacy_ecall_demo(struct pt_regs *regs)
+{
+    struct task_struct *current = get_current();
+    unsigned long sepc_offset;
+
+    if (!current || !current->legacy_ecall_demo)
+        return 0;
+
+    sepc_offset = regs->sepc;
+    if (current->user_image &&
+        sepc_offset >= (unsigned long)current->user_image)
+    {
+        sepc_offset -= (unsigned long)current->user_image;
+    }
+
+    trap_puts("=== S-Mode trap ===\n");
+    trap_puts("scause: ");
+    trap_put_uint(regs->scause);
+    trap_puts("\n");
+    trap_puts("sepc: ");
+    trap_hex32(sepc_offset);
+    trap_puts("\n");
+    trap_puts("stval: ");
+    trap_put_uint(regs->stval);
+    trap_puts("\n");
+
+    regs->sepc += 4;
+    regs->a0 = 0;
+
+    current->legacy_ecall_count++;
+    if (current->legacy_ecall_count >= 5)
+        process_exit_current(0);
+
+    return 1;
+}
+
+static void handle_user_syscall(struct pt_regs *regs)
+{
+    struct task_struct *current = get_current();
+    long ret = -1;
+    int advance = 1;
+
+    if (current)
+        current->trap_frame = regs;
+
+    if (handle_legacy_ecall_demo(regs))
+        return;
+
+    switch (regs->a7)
+    {
+    case SYS_GETPID:
+        ret = current ? current->pid : -1;
+        break;
+    case SYS_UART_READ:
+        ret = sys_uart_read((char *)regs->a0, (long)regs->a1);
+        break;
+    case SYS_UART_WRITE:
+        ret = sys_uart_write((const char *)regs->a0, (long)regs->a1);
+        break;
+    case SYS_EXEC:
+        ret = sys_exec(regs, (const char *)regs->a0);
+        if (ret == 0)
+            advance = 0;
+        break;
+    case SYS_FORK:
+        ret = fork_current_process(regs);
+        break;
+    case SYS_WAITPID:
+        regs->sepc += 4;
+        regs->a0 = wait_for_child((long)regs->a0);
+        return;
+    case SYS_EXIT:
+    case SYS_LEGACY_EXIT:
+        regs->sepc += 4;
+        process_exit_current((int)regs->a0);
+        return;
+    case SYS_STOP:
+        ret = stop_task((long)regs->a0);
+        break;
+    case SYS_DISPLAY:
+    {
+        unsigned long pixels = (unsigned long)regs->a1 * (unsigned long)regs->a2;
+        unsigned long bytes = pixels * sizeof(unsigned int);
+
+        if (regs->a1 > 0 && regs->a2 > 0 &&
+            pixels <= (1UL << 24) &&
+            user_range_ok((const void *)regs->a0, bytes, USER_ACCESS_READ))
+        {
+            unsigned long sstatus = user_access_begin();
+            video_bmp_display((unsigned int *)regs->a0, (int)regs->a1,
+                              (int)regs->a2);
+            user_access_end(sstatus);
+            ret = 0;
+        }
+        break;
+    }
+        break;
+    case SYS_USLEEP:
+        regs->sepc += 4;
+        process_sleep_usec((unsigned int)regs->a0);
+        regs->a0 = 0;
+        return;
+    case SYS_SIGNAL:
+        if ((int)regs->a0 > 0 && (int)regs->a0 < MAX_SIGNAL)
+        {
+            ret = current->signal_handlers[regs->a0];
+            current->signal_handlers[regs->a0] = regs->a1;
+        }
+        break;
+    case SYS_SIGRETURN:
+        sys_sigreturn(regs);
+        return;
+    case SYS_KILL:
+        ret = sys_kill((long)regs->a0, (int)regs->a1);
+        break;
+    case SYS_MMAP:
+        ret = sys_mmap((void *)regs->a0, regs->a1, (int)regs->a2,
+                       (int)regs->a3);
+        break;
+    case SYS_OPEN:
+        ret = sys_open((const char *)regs->a0, (int)regs->a1);
+        break;
+    case SYS_CLOSE:
+        ret = sys_close((int)regs->a0);
+        break;
+    case SYS_READ:
+        ret = sys_read((int)regs->a0, (void *)regs->a1, regs->a2);
+        break;
+    case SYS_WRITE:
+        ret = sys_write((int)regs->a0, (const void *)regs->a1, regs->a2);
+        break;
+    case SYS_MKDIR:
+        ret = sys_mkdir((const char *)regs->a0, (unsigned int)regs->a1);
+        break;
+    case SYS_MOUNT:
+        ret = sys_mount((const char *)regs->a0, (const char *)regs->a1,
+                        (const char *)regs->a2, regs->a3,
+                        (const void *)regs->a4);
+        break;
+    case SYS_CHDIR:
+        ret = sys_chdir((const char *)regs->a0);
+        break;
+    case SYS_LSEEK64:
+        ret = sys_lseek64((int)regs->a0, (long)regs->a1,
+                          (int)regs->a2);
+        break;
+    case SYS_IOCTL:
+        ret = sys_ioctl((int)regs->a0, regs->a1, (void *)regs->a2);
+        break;
+    default:
+        ret = -1;
+        break;
+    }
+
+    if (advance)
+        regs->sepc += 4;
+    regs->a0 = (unsigned long)ret;
+}
+
+/* ---------- Ring buffer for asynchronous UART RX/TX ---------- */
+#define RING_SIZE 16384
+struct ringbuf
+{
+    char buf[RING_SIZE];
+    volatile unsigned int r;
+    volatile unsigned int w;
+};
+
+static struct ringbuf rx_ring;
+static struct ringbuf tx_ring;
+static int async_console_enabled = 0;
+#define SHELL_LINE_SIZE 160
+static char shell_line[SHELL_LINE_SIZE];
+static int shell_output_busy = 0;
+static int boot_time_deferred = 0;
+static unsigned long boot_time_deferred_sec = 0;
+
+static int ring_empty(struct ringbuf *rb)
+{
+    return rb->r == rb->w;
+}
+
+static int ring_full(struct ringbuf *rb)
+{
+    return ((rb->w + 1) % RING_SIZE) == rb->r;
+}
+
+static void ring_push(struct ringbuf *rb, char c)
+{
+    unsigned int next = (rb->w + 1) % RING_SIZE;
+    if (next == rb->r)
+        return;
+    rb->buf[rb->w] = c;
+    rb->w = next;
+}
+
+static int ring_pop(struct ringbuf *rb, char *c)
+{
+    if (ring_empty(rb))
+        return 0;
+    *c = rb->buf[rb->r];
+    rb->r = (rb->r + 1) % RING_SIZE;
+    return 1;
+}
+
+static void ring_clear(struct ringbuf *rb)
+{
+    rb->r = 0;
+    rb->w = 0;
+}
+
+static int console_tx_pending(void)
+{
+    return async_console_enabled && !ring_empty(&tx_ring);
+}
+
+#define UART_TX_BACKGROUND_BUDGET 8
+#define UART_TX_AGGRESSIVE_BUDGET 256
+#define UART_TX_READY_SPINS 1024
+
+static int uart_kick_tx(void)
+{
+    int sent = 0;
+
+    while (!ring_empty(&tx_ring) &&
+           (uart_read_reg(UART_LSR) & UART_LSR_THRE))
+    {
+        char c;
+        if (ring_pop(&tx_ring, &c))
+        {
+            uart_write_reg(UART_THR, (unsigned char)c);
+            sent++;
+        }
+    }
+
+    if (!ring_empty(&tx_ring))
+        uart_enable_tx_irq();
+    else
+        uart_disable_tx_irq();
+
+    return sent;
+}
+
+static void console_putc_async(char c)
+{
+    unsigned long flags;
+
+    if (!async_console_enabled)
+    {
+        uart_putc_polling(c);
+        return;
+    }
+
+    if (c == '\n')
+        console_putc_async('\r');
+
+    while (1)
+    {
+        flags = irq_save();
+
+        if (!ring_full(&tx_ring))
+        {
+            ring_push(&tx_ring, c);
+            uart_kick_tx();
+            irq_restore(flags);
+            return;
+        }
+
+        irq_restore(flags);
+        run_tasks();
+        uart_pump_tx_aggressive();
+    }
+}
+
+static void console_puts_async(const char *s)
+{
+    while (*s)
+        console_putc_async(*s++);
+}
+
+static void console_flush_async(void)
+{
+    if (!async_console_enabled)
+        return;
+
+    while (!ring_empty(&tx_ring) ||
+           !(uart_read_reg(UART_LSR) & UART_LSR_THRE))
+    {
+        run_tasks();
+        uart_pump_tx_aggressive();
+    }
+}
+
+static void console_hex_async(unsigned long h)
+{
+    const char *hex = "0123456789abcdef";
+    console_puts_async("0x");
+    for (int i = (int)(sizeof(unsigned long) * 2) - 1; i >= 0; i--)
+    {
+        console_putc_async(hex[(h >> (i * 4)) & 0xf]);
+    }
+}
+
+static void console_put_uint_async(unsigned long x)
+{
+    char buf[32];
+    int i = 0;
+
+    if (x == 0)
+    {
+        console_putc_async('0');
+        return;
+    }
+
+    while (x > 0)
+    {
+        buf[i++] = (char)('0' + (x % 10));
+        x /= 10;
+    }
+
+    while (i > 0)
+        console_putc_async(buf[--i]);
+}
+
+/* ---------- Task queue: advanced exercise 2 ---------- */
+typedef void (*task_callback_t)(void *arg);
+
+#define MAX_TASKS 64
+struct task
+{
+    int used;
+    int priority;
+    unsigned long seq;
+    task_callback_t cb;
+    void *arg;
+};
+
+static struct task tasks[MAX_TASKS];
+static unsigned long task_seq = 0;
+static int current_task_priority = -1;
+static int tasks_running = 0;
+
+void add_task(task_callback_t callback, void *arg, int priority)
+{
+    unsigned long flags;
+
+    if (!callback)
+        return;
+
+    flags = irq_save();
+
+    for (int i = 0; i < MAX_TASKS; i++)
+    {
+        if (!tasks[i].used)
+        {
+            tasks[i].priority = priority;
+            tasks[i].seq = task_seq++;
+            tasks[i].cb = callback;
+            tasks[i].arg = arg;
+            asm volatile("" ::: "memory");
+            tasks[i].used = 1;
+            irq_restore(flags);
+            return;
+        }
+    }
+
+    irq_restore(flags);
+    uart_puts("[Task] queue full\n");
+}
+
+static int pick_task_above(int min_priority)
+{
+    int best = -1;
+
+    for (int i = 0; i < MAX_TASKS; i++)
+    {
+        if (!tasks[i].used)
+            continue;
+        if (tasks[i].priority <= min_priority)
+            continue;
+        if (best < 0 ||
+            tasks[i].priority > tasks[best].priority ||
+            (tasks[i].priority == tasks[best].priority && tasks[i].seq < tasks[best].seq))
+        {
+            best = i;
+        }
+    }
+
+    return best;
+}
+
+static void run_tasks(void)
+{
+    unsigned long flags = irq_save();
+
+    int previous_running = tasks_running;
+    int previous_priority = current_task_priority;
+
+    tasks_running = 1;
+
+    while (1)
+    {
+        int idx = pick_task_above(current_task_priority);
+        if (idx < 0)
+            break;
+
+        task_callback_t cb = tasks[idx].cb;
+        void *arg = tasks[idx].arg;
+        int prio = tasks[idx].priority;
+
+        tasks[idx].used = 0;
+
+        int saved_priority = current_task_priority;
+        current_task_priority = prio;
+
+        local_irq_enable();
+        cb(arg);
+        local_irq_disable();
+
+        current_task_priority = saved_priority;
+    }
+
+    tasks_running = previous_running;
+    current_task_priority = previous_priority;
+
+    irq_restore(flags);
+}
+
+static char console_getc(void)
+{
+    char c;
+
+    while (!ring_pop(&rx_ring, &c))
+    {
+        run_tasks();
+        uart_pump_tx();
+        schedule();
+    }
+
+    return c == '\r' ? '\n' : c;
+}
+
+/*
+ * Public UART console API.
+ *
+ * Lab4 asks uart_getc/uart_putc/uart_puts to be asynchronous.  The old
+ * busy-wait implementations are kept in uart.c as *_polling and are used
+ * only before interrupts/ring buffers are enabled or during binary load.
+ */
+char uart_getc(void)
+{
+    if (!async_console_enabled)
+        return uart_getc_polling();
+
+    return console_getc();
+}
+
+void uart_putc(char c)
+{
+    console_putc_async(c);
+}
+
+void uart_puts(const char *s)
+{
+    console_puts_async(s);
+}
+
+/* ---------- PLIC / UART interrupt ---------- */
+
+static void plic_init(void)
+{
+    int ctx = (int)PLIC_CONTEXT(boot_cpu_hartid);
+
+    if (!plic_base)
+    {
+        return;
+    }
+
+    write32(plic_priority_addr(uart_irq_id), 1);
+
+    unsigned long enable_addr =
+        plic_enable_addr(ctx) + (unsigned long)(uart_irq_id / 32) * 4UL;
+
+    unsigned int enable = read32(enable_addr);
+    enable |= (1U << (uart_irq_id % 32));
+    write32(enable_addr, enable);
+
+    write32(plic_threshold_addr(ctx), 0);
+}
+
+static int plic_claim(void)
+{
+    int ctx = (int)PLIC_CONTEXT(boot_cpu_hartid);
+
+    if (!plic_base)
+        return 0;
+
+    return (int)read32(plic_claim_addr(ctx));
+}
+
+static void plic_complete(int irq)
+{
+    int ctx = (int)PLIC_CONTEXT(boot_cpu_hartid);
+
+    if (!plic_base)
+        return;
+
+    write32(plic_claim_addr(ctx), (unsigned int)irq);
+}
+
+#define UART_LCR_8N1 0x03
+
+static void uart_interrupt_init(void)
+{
+    uart_ier_shadow = uart_read_reg(UART_IER);
+    uart_ier_shadow |= UART_IER_RX;
+    uart_write_reg(UART_IER, uart_ier_shadow);
+
+    unsigned int mcr = uart_read_reg(UART_MCR);
+    uart_write_reg(UART_MCR, mcr | UART_MCR_OUT2);
+}
+
+static void uart_interrupt_disable(void)
+{
+    uart_ier_shadow = uart_read_reg(UART_IER);
+    uart_ier_shadow &= ~(UART_IER_RX | UART_IER_TX);
+    uart_write_reg(UART_IER, uart_ier_shadow);
+}
+
+static void uart_interrupt_enable(void)
+{
+    uart_ier_shadow = uart_read_reg(UART_IER);
+    uart_ier_shadow |= UART_IER_RX;
+    uart_write_reg(UART_IER, uart_ier_shadow);
+}
+
+static void uart_finish_task_irq_state(void)
+{
+    unsigned long flags = irq_save();
+
+    uart_kick_tx();
+
+    irq_restore(flags);
+}
+
+static void uart_wait_tx_ready(unsigned int spins)
+{
+    while (spins-- > 0)
+    {
+        if (uart_read_reg(UART_LSR) & UART_LSR_THRE)
+            return;
+    }
+}
+
+static void uart_pump_tx_budget(unsigned int budget, unsigned int wait_spins)
+{
+    if (!async_console_enabled)
+        return;
+
+    while (budget-- > 0)
+    {
+        unsigned long flags = irq_save();
+        int sent = uart_kick_tx();
+        int empty = ring_empty(&tx_ring);
+        irq_restore(flags);
+
+        if (empty)
+            return;
+
+        if (sent == 0)
+        {
+            if (wait_spins == 0)
+                return;
+
+            uart_wait_tx_ready(wait_spins);
+        }
+    }
+}
+
+static void uart_pump_tx(void)
+{
+    uart_pump_tx_budget(UART_TX_BACKGROUND_BUDGET, 0);
+}
+
+static void uart_pump_tx_aggressive(void)
+{
+    uart_pump_tx_budget(UART_TX_AGGRESSIVE_BUDGET, UART_TX_READY_SPINS);
+}
+
+#define UART_IRQ_TASK_COUNT 4
+#define UART_IRQ_RX_MAX 64
+
+struct uart_irq_task
+{
+    int used;
+    int rx_len;
+    int tx_ready;
+    char rx[UART_IRQ_RX_MAX];
+};
+
+static struct uart_irq_task uart_irq_tasks[UART_IRQ_TASK_COUNT];
+
+static void uart_processing_task(void *arg)
+{
+    struct uart_irq_task *task = (struct uart_irq_task *)arg;
+
+    for (int i = 0; i < task->rx_len; i++)
+        ring_push(&rx_ring, task->rx[i] == '\r' ? '\n' : task->rx[i]);
+
+    task->rx_len = 0;
+    task->tx_ready = 0;
+    task->used = 0;
+
+    uart_finish_task_irq_state();
+}
+
+static struct uart_irq_task *alloc_uart_irq_task(void)
+{
+    for (int i = 0; i < UART_IRQ_TASK_COUNT; i++)
+    {
+        if (!uart_irq_tasks[i].used)
+        {
+            uart_irq_tasks[i].used = 1;
+            uart_irq_tasks[i].rx_len = 0;
+            uart_irq_tasks[i].tx_ready = 0;
+            return &uart_irq_tasks[i];
+        }
+    }
+
+    return 0;
+}
+
+static void handle_uart_interrupt(void)
+{
+    (void)uart_read_reg(UART_IIR);
+    uart_interrupt_disable();
+
+    struct uart_irq_task *task = alloc_uart_irq_task();
+    if (!task)
+    {
+        while (uart_read_reg(UART_LSR) & UART_LSR_DR)
+            (void)uart_read_reg(UART_RBR);
+        uart_finish_task_irq_state();
+        return;
+    }
+
+    while ((uart_read_reg(UART_LSR) & UART_LSR_DR) &&
+           task->rx_len < UART_IRQ_RX_MAX)
+    {
+        task->rx[task->rx_len++] =
+            (char)(uart_read_reg(UART_RBR) & 0xff);
+    }
+
+    if (uart_read_reg(UART_LSR) & UART_LSR_THRE)
+        task->tx_ready = 1;
+
+    add_task(uart_processing_task, task, 3);
+}
+
+/* ---------- Timer multiplexing: advanced exercise 1 ---------- */
+typedef void (*timer_callback_t)(void *arg);
+
+static int timer_boot_log_enabled = 0;
+
+static void boot_time_print_line(unsigned long sec)
+{
+    console_puts_async("boot time: ");
+    console_put_uint_async(sec);
+    console_puts_async("\n");
+}
+
+static void boot_time_task(void *arg)
+{
+    unsigned long sec = (unsigned long)arg;
+
+    if (shell_output_busy)
+    {
+        boot_time_deferred = 1;
+        boot_time_deferred_sec = sec;
+        return;
+    }
+
+    boot_time_print_line(sec);
+    console_flush_async();
+}
+
+static void boot_time_print_deferred(void)
+{
+    if (!boot_time_deferred || shell_output_busy)
+        return;
+
+    unsigned long sec = boot_time_deferred_sec;
+
+    boot_time_deferred = 0;
+    boot_time_task((void *)sec);
+}
+
+#define MAX_TIMERS 64
+struct timer_event
+{
+    int used;
+    unsigned long expire;
+    timer_callback_t cb;
+    void *arg;
+};
+
+static struct timer_event timers[MAX_TIMERS];
+static unsigned long next_periodic_tick = 0;
+static unsigned long next_scheduler_tick = 0;
+static unsigned long boot_time_base = 0;
+
+static unsigned long ticks_per_sec(void)
+{
+    return timebase_frequency ? timebase_frequency : 10000000UL;
+}
+
+static unsigned long now_seconds(void)
+{
+    return (read_time() - boot_time_base) / ticks_per_sec();
+}
+
+static void program_next_timer(void)
+{
+    unsigned long next = next_periodic_tick;
+
+    if (next_scheduler_tick && (next == 0 || next_scheduler_tick < next))
+        next = next_scheduler_tick;
+
+    for (int i = 0; i < MAX_TIMERS; i++)
+    {
+        if (!timers[i].used)
+            continue;
+        if (next == 0 || timers[i].expire < next)
+            next = timers[i].expire;
+    }
+
+    if (next == 0)
+        next = read_time() + 2 * ticks_per_sec();
+
+    sbi_set_timer(next);
+}
+
+void add_timer(timer_callback_t callback, void *arg, int sec)
+{
+    if (sec < 0)
+        sec = 0;
+
+    unsigned long expire = read_time() + (unsigned long)sec * ticks_per_sec();
+
+    for (int i = 0; i < MAX_TIMERS; i++)
+    {
+        if (!timers[i].used)
+        {
+            timers[i].used = 1;
+            timers[i].expire = expire;
+            timers[i].cb = callback;
+            timers[i].arg = arg;
+            program_next_timer();
+            return;
+        }
+    }
+
+    console_puts_async("[Timer] queue full\n");
+}
+
+struct timeout_message
+{
+    int used;
+    unsigned long created_sec;
+    int seconds;
+    char msg[96];
+};
+
+static struct timeout_message timeout_messages[MAX_TIMERS];
+
+static void timeout_task(void *arg)
+{
+    struct timeout_message *tm = (struct timeout_message *)arg;
+
+    console_puts_async(tm->msg);
+    console_puts_async("\n");
+
+    tm->used = 0;
+}
+
+static void timeout_timer_cb(void *arg)
+{
+    add_task(timeout_task, arg, 2);
+}
+
+static void handle_timer_interrupt(void)
+{
+    unsigned long now = read_time();
+    unsigned long sched_delta = ticks_per_sec() / 32;
+
+    uart_pump_tx();
+
+    if (sched_delta == 0)
+        sched_delta = 1;
+
+    while (next_scheduler_tick && now >= next_scheduler_tick)
+        next_scheduler_tick += sched_delta;
+
+    while (next_periodic_tick && now >= next_periodic_tick)
+    {
+        if (timer_boot_log_enabled)
+        {
+            unsigned long sec =
+                (next_periodic_tick - boot_time_base) / ticks_per_sec();
+
+            add_task(boot_time_task, (void *)sec, 2);
+        }
+
+        next_periodic_tick += 2 * ticks_per_sec();
+    }
+
+    for (int i = 0; i < MAX_TIMERS; i++)
+    {
+        if (timers[i].used && now >= timers[i].expire)
+        {
+            timer_callback_t cb = timers[i].cb;
+            void *arg = timers[i].arg;
+            timers[i].used = 0;
+            add_task((task_callback_t)cb, arg, 2);
+        }
+    }
+
+    program_next_timer();
+}
+
+static void timer_init(void)
+{
+    boot_time_base = read_time();
+    next_periodic_tick = boot_time_base + 2 * ticks_per_sec();
+    next_scheduler_tick = boot_time_base + ticks_per_sec() / 32;
+
+    /*
+     * Do not enable STIE here.
+     * start_kernel() will enable it after printing the prompt.
+     */
+    program_next_timer();
+}
+
+/* ---------- trap handler ---------- */
+static int page_fault_access(unsigned long scause)
+{
+    if (scause == SCAUSE_INST_PAGE_FAULT)
+        return USER_ACCESS_EXEC;
+    if (scause == SCAUSE_STORE_PAGE_FAULT)
+        return USER_ACCESS_WRITE;
+    return USER_ACCESS_READ;
+}
+
+static void handle_page_fault(struct pt_regs *regs)
+{
+    struct task_struct *current = get_current();
+    unsigned long addr = regs->stval;
+
+    if (current && current->kind == TASK_USER &&
+        ensure_user_page(current, addr, page_fault_access(regs->scause), 1) == 0)
+    {
+        return;
+    }
+
+    trap_puts("[Segmentation fault]: Kill Process\n");
+    if (current && current->kind == TASK_USER)
+        process_exit_current(-1);
+
+    while (1)
+    {
+    }
+}
+
+void do_trap(struct pt_regs *regs)
+{
+    unsigned long scause = regs->scause;
+    struct task_struct *current = get_current();
+
+    if (current && current->kind == TASK_USER)
+        current->trap_frame = regs;
+
+    if (scause == SCAUSE_U_ECALL)
+    {
+        handle_user_syscall(regs);
+    }
+    else if (scause == SCAUSE_S_TIMER)
+    {
+        handle_timer_interrupt();
+        process_wake_sleepers();
+    }
+    else if (scause == SCAUSE_S_EXT)
+    {
+        int irq = plic_claim();
+
+        if (irq == uart_irq_id)
+        {
+            handle_uart_interrupt();
+        }
+
+        if (irq)
+            plic_complete(irq);
+    }
+    else if (scause == SCAUSE_INST_PAGE_FAULT ||
+             scause == SCAUSE_LOAD_PAGE_FAULT ||
+             scause == SCAUSE_STORE_PAGE_FAULT)
+    {
+        handle_page_fault(regs);
+    }
+    else
+    {
+        trap_puts("Unexpected trap. sepc: ");
+        trap_hex(regs->sepc);
+        trap_puts(", scause: ");
+        trap_hex(regs->scause);
+        trap_puts(", stval: ");
+        trap_hex(regs->stval);
+        trap_puts("\n");
+        while (1)
+        {
+        }
+    }
+
+    run_tasks();
+
+    if (current && scheduler_ready &&
+        (scause == SCAUSE_S_TIMER || current->state != TASK_RUNNING))
+    {
+        schedule();
+    }
+
+    deliver_signal_if_needed(regs);
+}
+
+/* ---------- load command ---------- */
+static unsigned int uart_get_u32_polling(void)
+{
+    unsigned int x = 0;
+    x |= (unsigned int)uart_getb();
+    x |= (unsigned int)uart_getb() << 8;
+    x |= (unsigned int)uart_getb() << 16;
+    x |= (unsigned int)uart_getb() << 24;
+    return x;
+}
+
+static void boot_loaded_kernel(const void *fdt)
+{
+    void (*kernel_entry)(unsigned long hartid, const void *fdt);
+    kernel_entry = (void (*)(unsigned long, const void *))LOAD_ADDR;
+    asm volatile("fence.i" ::: "memory");
+    kernel_entry(0, fdt);
+}
+
+static void shell_load(void)
+{
+    int old_timer_log = timer_boot_log_enabled;
+
+    timer_boot_log_enabled = 0;
+
+    uart_interrupt_disable();
+
+    ring_clear(&rx_ring);
+    ring_clear(&tx_ring);
+
+    async_console_enabled = 0;
+
+    uart_puts("Waiting for kernel image...\n");
+
+    unsigned int magic = uart_get_u32_polling();
+
+    if (magic != BOOT_MAGIC)
+    {
+        uart_puts("Bad magic.\n");
+
+        async_console_enabled = 1;
+        uart_interrupt_enable();
+        timer_boot_log_enabled = old_timer_log;
+        return;
+    }
+
+    unsigned int size = uart_get_u32_polling();
+
+    uart_puts("Receiving kernel...\n");
+
+    unsigned char *dst = (unsigned char *)LOAD_ADDR;
+    for (unsigned int i = 0; i < size; i++)
+    {
+        dst[i] = uart_getb();
+    }
+
+    uart_puts("Waiting for cpio archive...\n");
+
+    magic = uart_get_u32_polling();
+    if (magic != BOOT_MAGIC)
+    {
+        uart_puts("Bad cpio magic.\n");
+        async_console_enabled = 1;
+        uart_interrupt_enable();
+        timer_boot_log_enabled = old_timer_log;
+        return;
+    }
+
+    unsigned int cpio_size = uart_get_u32_polling();
+    uart_puts("Receiving cpio...\n");
+
+    unsigned char *cpio_dst = (unsigned char *)CPIO_LOAD_ADDR;
+    for (unsigned int i = 0; i < cpio_size; i++)
+        cpio_dst[i] = uart_getb();
+
+    void *new_fdt = make_writable_fdt_copy(boot_fdt);
+    if (!new_fdt)
+    {
+        async_console_enabled = 1;
+        uart_interrupt_enable();
+        timer_boot_log_enabled = old_timer_log;
+        return;
+    }
+
+    update_initrd_in_fdt(new_fdt,
+                         CPIO_LOAD_ADDR_PHYS,
+                         CPIO_LOAD_ADDR_PHYS + cpio_size);
+
+    uart_puts("new fdt = ");
+    uart_hex((unsigned long)new_fdt);
+    uart_puts("\n");
+    uart_puts("new initrd start = ");
+    uart_hex(CPIO_LOAD_ADDR_PHYS);
+    uart_puts("\n");
+    uart_puts("new initrd end   = ");
+    uart_hex(CPIO_LOAD_ADDR_PHYS + cpio_size);
+    uart_puts("\n");
+
+    uart_puts("Booting loaded kernel...\n");
+
+    local_irq_disable();
+    asm volatile("csrc sie, %0" ::"r"(SIE_STIE | SIE_SEIE) : "memory");
+
+    boot_loaded_kernel(new_fdt);
+}
+
+/* ---------- shell ---------- */
+static int parse_uint(const char **p)
+{
+    int v = 0;
+    while (**p == ' ')
+        (*p)++;
+    while (**p >= '0' && **p <= '9')
+    {
+        v = v * 10 + (**p - '0');
+        (*p)++;
+    }
+    return v;
+}
+
+static void test_task_cb(void *arg)
+{
+    char *s = (char *)arg;
+    console_puts_async("[Task] Executing Priority ");
+    console_puts_async(s);
+    console_puts_async("\n");
+}
+
+static void shell_help(void)
+{
+    console_puts_async("Available commands:\n");
+    console_puts_async("    help        - show all commands.\n");
+    console_puts_async("    hello       - print Hello world.\n");
+    console_puts_async("    info        - print system info.\n");
+    console_puts_async("    load        - load a kernel and cpio over UART.\n");
+    console_puts_async("    ls          - list files.\n");
+    console_puts_async("    cat         - show file content.\n");
+    console_puts_async("    memtest     - run memory allocator test.\n");
+    console_puts_async("    exec FILE   - execute a user program.\n");
+    console_puts_async("    settimeout  - show text after X sec.\n");
+    console_puts_async("    tasktest    - test priority task queue.\n");
+}
+
+static void shell_info(void)
+{
+    console_puts_async("System information:\n");
+    console_puts_async("    OpenSBI specification version: ");
+    console_hex_async(sbi_get_spec_version());
+    console_puts_async("\n");
+
+    console_puts_async("    implementation ID: ");
+    console_hex_async(sbi_get_impl_id());
+    console_puts_async("\n");
+
+    console_puts_async("    implementation version: ");
+    console_hex_async(sbi_get_impl_version());
+    console_puts_async("\n");
+
+    console_puts_async("    timebase-frequency: ");
+    console_put_uint_async(timebase_frequency);
+    console_puts_async("\n");
+}
+
+static void shell_set_timeout(const char *cmd)
+{
+    const char *p = cmd;
+    while (*p && *p != ' ')
+        p++;
+
+    int sec = parse_uint(&p);
+
+    while (*p == ' ')
+        p++;
+
+    if (*p == '\0')
+    {
+        console_puts_async("Usage: settimeout SECONDS MESSAGE\n");
+        return;
+    }
+
+    for (int i = 0; i < MAX_TIMERS; i++)
+    {
+        if (!timeout_messages[i].used)
+        {
+            timeout_messages[i].used = 1;
+            timeout_messages[i].created_sec = now_seconds();
+            timeout_messages[i].seconds = sec;
+            strncpy_message(timeout_messages[i].msg, p, sizeof(timeout_messages[i].msg));
+            add_timer(timeout_timer_cb, &timeout_messages[i], sec);
+            return;
+        }
+    }
+
+    console_puts_async("settimeout queue full\n");
+}
+
+static void shell_execute(const char *cmd)
+{
+    if (strcmp_simple(cmd, "help"))
+    {
+        shell_help();
+    }
+    else if (strcmp_simple(cmd, "hello"))
+    {
+        console_puts_async("Hello world.\n");
+    }
+    else if (strcmp_simple(cmd, "info"))
+    {
+        shell_info();
+    }
+    else if (strcmp_simple(cmd, "load"))
+    {
+        shell_load();
+    }
+    else if (strcmp_simple(cmd, "ls"))
+    {
+        if (initrd_start)
+            initrd_list(initrd_start);
+        else
+            console_puts_async("initrd not found\n");
+    }
+    else if (strncmp_simple(cmd, "cat ", 4) == 0)
+    {
+        if (initrd_start)
+            initrd_cat(initrd_start, cmd + 4);
+        else
+            console_puts_async("initrd not found\n");
+    }
+    else if (strcmp_simple(cmd, "memtest"))
+    {
+        test_alloc_1();
+    }
+    else if (strcmp_simple(cmd, "exec"))
+    {
+        console_puts_async("Usage: exec FILE\n");
+    }
+    else if (strncmp_simple(cmd, "exec ", 5) == 0)
+    {
+        const char *filename = cmd + 5;
+
+        while (*filename == ' ')
+            filename++;
+
+        if (*filename == '\0')
+            console_puts_async("Usage: exec FILE\n");
+        else
+            exec_user_program(filename);
+    }
+    else if (strncmp_simple(cmd, "setTimeout ", 11) == 0 ||
+             strncmp_simple(cmd, "settimeout ", 11) == 0)
+    {
+        shell_set_timeout(cmd);
+    }
+    else if (strcmp_simple(cmd, "tasktest"))
+    {
+        add_task(test_task_cb, "1", 1);
+        add_task(test_task_cb, "3", 3);
+        add_task(test_task_cb, "2", 2);
+        run_tasks();
+    }
+    else if (cmd[0] != '\0')
+    {
+        console_puts_async("Unknown command: ");
+        console_puts_async(cmd);
+        console_puts_async("\nUse help to get commands.\n");
+    }
+}
+
+/* ---------- self relocation ---------- */
+static void __attribute__((unused)) relocate_self(const void *fdt)
+{
+    unsigned char *src = (unsigned char *)_start;
+    unsigned char *dst = (unsigned char *)RELOC_ADDR;
+    unsigned long size = (unsigned long)(_end - _start);
+
+    for (unsigned long i = 0; i < size; i++)
+        dst[i] = src[i];
+
+    unsigned long kernel_size =
+        (unsigned long)_end - (unsigned long)_start;
+
+    unsigned long new_sp =
+        RELOC_ADDR + kernel_size + KERNEL_STACK_SIZE;
+
+    new_sp &= ~0xFUL;
+
+    asm volatile("mv sp, %0" ::"r"(new_sp) : "memory");
+
+    void (*entry)(const void *) =
+        (void (*)(const void *))(RELOC_ADDR + ((unsigned long)start_kernel - (unsigned long)_start));
+
+    asm volatile("fence.i" ::: "memory");
+    entry(fdt);
+}
+
+static void shell_print_prompt(int leading_newline)
+{
+    if (leading_newline)
+        console_putc_async('\n');
+
+    console_puts_async("opi-rv2> ");
+    console_flush_async();
+}
+
+static void shell_thread(void *arg)
+{
+    (void)arg;
+
+    int idx = 0;
+
+    console_puts_async("\nType help to get commands.\n\n");
+    shell_print_prompt(0);
+    add_task(boot_time_task, (void *)0, 2);
+    timer_boot_log_enabled = 1;
+
+    while (1)
+    {
+        char c = console_getc();
+
+        if (c == '\r' || c == '\n')
+        {
+            console_putc_async('\n');
+            console_flush_async();
+            shell_line[idx] = '\0';
+
+            shell_output_busy = 1;
+            shell_execute(shell_line);
+            console_flush_async();
+            shell_output_busy = 0;
+
+            idx = 0;
+            shell_print_prompt(1);
+            boot_time_print_deferred();
+        }
+        else if (c == 127 || c == '\b')
+        {
+            if (idx > 0)
+            {
+                idx--;
+                console_puts_async("\b \b");
+                console_flush_async();
+                if (idx == 0)
+                    boot_time_print_deferred();
+            }
+        }
+        else
+        {
+            if (idx < SHELL_LINE_SIZE - 1)
+            {
+                shell_line[idx++] = c;
+                console_putc_async(c);
+                console_flush_async();
+            }
+        }
+    }
+}
+
+/* ---------- kernel entry ---------- */
+void start_kernel(const void *fdt)
+{
+    /*
+     * Important for hot-loaded kernel:
+     * Previous kernel may jump here with SIE/STIE/SEIE still enabled.
+     */
+    local_irq_disable();
+    asm volatile("csrc sie, %0" ::"r"(SIE_STIE | SIE_SEIE) : "memory");
+
+    boot_fdt = fdt;
+    uart_init_from_dtb(fdt);
+
+    set_stvec_relocated();
+    drop_identity_map();
+
+    uart_puts("\nStarting kernel ...\n");
+
+    uart_puts("fdt ptr = ");
+    uart_hex((unsigned long)fdt);
+    uart_puts("\n");
+
+    initrd_init_from_dtb(fdt);
+    mm_init_advanced(fdt, (unsigned long)initrd_start, (unsigned long)initrd_end);
+    uart_puts("memory allocator ready\n");
+    timer_frequency_init_from_dtb(fdt);
+    plic_init_from_dtb(fdt);
+    video_init();
+    if (vfs_init() < 0)
+        uart_puts("vfs init failed\n");
+    else
+        uart_puts("vfs ready\n");
+
+    plic_init();
+    uart_interrupt_init();
+    timer_init();
+
+    enable_timer_interrupt();
+    enable_external_interrupt();
+    local_irq_enable();
+
+    async_console_enabled = 1;
+
+    memset(&boot_task, 0, sizeof(boot_task));
+    boot_task.pid = 0;
+    boot_task.state = TASK_RUNNING;
+    boot_task.kind = TASK_KERNEL;
+    boot_task.waiting_pid = -1;
+    boot_task.pgd = kernel_pgd;
+    task_vfs_init_common(&boot_task, 0);
+    current_task = &boot_task;
+    enqueue_task(&boot_task);
+    asm volatile("mv tp, %0" ::"r"(&boot_task) : "memory");
+    scheduler_ready = 1;
+
+    create_kernel_thread(shell_thread, 0);
+    idle_thread(0);
+}
